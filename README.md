@@ -11,6 +11,9 @@ Por enquanto este container roda o **mockup** do pipeline (`pipeline.py`); o
 
 ## Rodar
 
+Guia completo, com cada modo separado (local, janela, Kafka local, Kafka do projeto):
+[`docs/como-rodar.md`](docs/como-rodar.md).
+
 ```
 docker build -t inv-a4 .
 <eventos do i2> | docker run -i --rm --user "$(id -u):$(id -g)" -v "$PWD/dados:/app/dados" \
