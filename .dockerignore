@@ -1,0 +1,8 @@
+**/__pycache__
+yolo/.venv
+yolo/anotado
+*.pt
+dados/video.mp4
+dados/pipeline.mp4
+docs
+.git

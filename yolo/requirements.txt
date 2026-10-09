@@ -1,0 +1,28 @@
+# ambiente da ferramenta de deteccao -- NAO e dependencia dos componentes.
+# os modulos de inv/ usam so numpy; o torch mora aqui e nunca entra na entrega.
+# isto existe porque o detectar.py e o "produtor falso" que a V6 pede como
+# evidencia minima de contrato, ate o I1 (MOD-1) do outro grupo chegar.
+#
+# montar:
+#   python3 -m venv yolo/.venv
+#   yolo/.venv/bin/pip install -r yolo/requirements.txt
+#
+# baixa ~3,9 GB (o peso e o stack CUDA, nao o torch) e ocupa ~6 GB no venv.
+# depois, yolo/.venv/bin/pip cache purge devolve mais ~3 GB.
+# em maquina sem nvidia o pip resolve o torch de cpu sozinho: funciona, so lento.
+# testado em python 3.14.7, cuda 13, rtx 3060.
+#
+# o peso de volei nao esta no git (*.pt ignorado). para obter:
+#   yolo/.venv/bin/pip install gdown
+#   yolo/.venv/bin/gdown 1KXDunsC1ALOObb303n9j6HHO7Bxz1HR_ -O /tmp/pacote.zip
+#   unzip -o -j /tmp/pacote.zip "ball_segment/model1/weights/best.pt" -d yolo/
+#   mv yolo/best.pt yolo/bola_volei.pt
+# o link entrega um zip da pasta de treino, nao um .pt solto -- o .pt esta dentro.
+# origem: github.com/masouduut94/volleyball_analytics (yolov8n-seg, 1 classe:
+# ball; treino 200 epocas a imgsz 1024; precisao 93,5% / recall 90,9% / mAP50 94,8%)
+
+ultralytics==8.4.155
+torch==2.14.0
+torchvision==0.29.0
+opencv-python==5.0.0.93
+numpy==2.5.3

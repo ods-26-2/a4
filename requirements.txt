@@ -1,0 +1,4 @@
+# o torch do yolo nao entra aqui: ele mora em yolo/requirements.txt, fora da imagem
+numpy==2.5.3
+opencv-python-headless==5.0.0.93
+confluent-kafka==2.16.0
