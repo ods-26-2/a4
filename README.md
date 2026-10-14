@@ -1,119 +1,59 @@
 # A4 · esporte, captação e arbitragem
 
-Parte do INV-1 · ODS 2026/2. O squad tem três componentes, cada um no seu repositório
-e no seu container: [I2](https://github.com/ods-26-2/i2) (identidade e rastreio), [I3](https://github.com/ods-26-2/i3) (geometria e
-calibração) e [A4](https://github.com/ods-26-2/a4) (arbitragem). Nenhum importa o outro: eles conversam pelo
-Kafka do projeto, no envelope de `docs/INV-1_interfaces.md`, seguindo o guia
-`docs/Guia_Kafka_B2_v2.pdf`.
+Parte do INV-1 · ODS 2026/2. O A4 é a aplicação de arbitragem: decide se a bola quicou
+dentro ou fora, mantém o placar com correção manual e dá ao árbitro a tela da partida.
+O sistema propõe, o árbitro decide.
 
-Por enquanto este container roda o **mockup** do pipeline (`pipeline.py`); o
-`a4_arbitragem.py` ainda não está ligado nele.
+Este repositório está no começo do Sprint 3. Por enquanto o back é um **mock** que inventa
+lances, para o front já ter com o que trabalhar.
 
-## Rodar
-
-Guia completo, com cada modo separado (local, janela, Kafka local, Kafka do projeto):
-[`docs/como-rodar.md`](docs/como-rodar.md).
+## Estrutura
 
 ```
-docker build -t inv-a4 .
-<eventos do i2> | docker run -i --rm --user "$(id -u):$(id -g)" -v "$PWD/dados:/app/dados" \
-    inv-a4 yolo/clipe.mp4 --calib dados/calibracao.json
+a4/
+├── back/    API do A4 (FastAPI). Hoje é mock: inventa um lance a cada 6 s
+├── front/   tela do árbitro (Next.js 16)
+├── docs/    como usar, contrato da API e documentos de referência do squad
+└── old/     o que existia antes do Sprint 3: pipeline com Kafka, rule engine, yolo
 ```
 
-Pelo barramento, sem stdin nem arquivo:
+## Rodar em dois terminais
 
 ```
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/dados:/app/dados" \
-    inv-a4 yolo/clipe.mp4 --kafka 34.66.235.91:9093 --sessao sessao-1
+# terminal 1, back na porta 8000
+cd back
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/uvicorn main:app --reload --port 8000
+
+# terminal 2, front na porta 3000
+cd front
+npm install
+npm run dev
 ```
 
-Com `--kafka`, ele lê `ods.visao.calibracao_publicada` e `ods.visao.identidade_atribuida`
-com `group.id` `A4-arbitragem`, sem gravar offset. Por isso cada execução relê desde o
-começo e fica com a câmera (`--camera-id`) e a sessão (`--sessao`) pedidas. Ele para
-sozinho depois de `--ocioso` segundos sem mensagem nova (padrão 10), como o guia pede para
-não gastar crédito. Mensagem fora do envelope é descartada e o motivo vai para o stderr.
+Abra http://localhost:3000. O placar muda sozinho a cada lance inventado pelo mock, e os
+botões de cada lance corrigem o veredito ou desfazem o ponto.
 
-No modo local, as entradas são `--calib`, o arquivo JSON que o i3 publicou, e no stdin os eventos do i2, uma linha
-JSON por quadro. Saída: `dados/pipeline.mp4`, com a quadra reprojetada e cada trilha com id
-e posição em metros. Fora do container, `--janela` abre a visualização ao vivo.
-A cadeia completa está logo abaixo.
+O passo a passo completo, o contrato da API e os problemas comuns estão em
+[`docs/como-usar.md`](docs/como-usar.md).
 
-Entra trajetória já convertida por I3 e identidade de I2. Ponta da cadeia.
+## Documentos
 
-**Entrada** `Amostra(t_s, ponto_m, altura)`
+| arquivo | o que é |
+|---|---|
+| [`docs/como-usar.md`](docs/como-usar.md) | como rodar back e front, contrato da API, problemas comuns |
+| [`docs/INV-1_arquitetura.pdf`](docs/INV-1_arquitetura.pdf) | projeto de componente do squad (I2, I3, A4) e divisão em sprints |
+| [`docs/INV-1_interfaces.md`](docs/INV-1_interfaces.md) | contratos de I2 e I3 entregues no Sprint 2 |
+| [`docs/Guia_Kafka_B2_v2.pdf`](docs/Guia_Kafka_B2_v2.pdf) | guia do barramento Kafka do projeto |
+| [`old/README.md`](old/README.md) e [`old/docs/como-rodar.md`](old/docs/como-rodar.md) | o pipeline antigo I3 → I2 → A4 |
 
-| campo | formato | observação |
-|---|---|---|
-| `t_s` | float em s | mesmo relógio de I2 |
-| `ponto_m` | `(x, y)` em m | **já convertido por I3** — A4 não vê homografia |
-| `altura` | float | altura aparente, só precisa ter mínimo no contato |
+## Pasta `old/`
 
-**Saída** `Decisao(veredito, distancia_cm, banda_cm, trilha_id, camera_id, versao_calibracao, origem, operador, veredito_automatico)`
+É o A4 de antes do Sprint 3, guardado como referência. O `old/a4_arbitragem.py` já tem o
+esboço do rule engine, e o `old/pipeline.py` tem o consumidor Kafka; os dois vão ser
+reaproveitados no `back/`.
 
-| campo | formato | observação |
-|---|---|---|
-| `veredito` | str | `dentro`, `fora`, `duvida` |
-| `distancia_cm` | float | positivo é fora |
-| `banda_cm` | float | incerteza propagada, 2σ |
-| `versao_calibracao` | str | qual artefato de I3 decidiu este lance |
-| `origem` / `operador` | str | `automatica` ou `corrigida`, e por quem |
-
-**O que importa**
-
-- A decisão não sai de um quadro. A 20 m/s a bola anda 67 cm entre quadros a 30 fps.
-  O instante do quique sai do ajuste da trajetória, interpolado em sub-quadro.
-- A incerteza é propagada em quadratura: calibração (I3) + rastreio (I2) + tempo. Deu
-  banda de ±21 cm. Se a banda cruza a linha, o veredito é `duvida` — não um chute binário.
-- Decisão automática é proposta. `origem` e `operador` existem desde o primeiro dia.
-
-## Cadeia completa · I3 → I2 → A4
-
-Com os três repositórios clonados lado a lado, numa mesma pasta:
-
-```
-git clone https://github.com/ods-26-2/i2 && git clone https://github.com/ods-26-2/i3 && git clone https://github.com/ods-26-2/a4
-```
-
-```
-docker build -t inv-i3 i3 && docker build -t inv-i2 i2 && docker build -t inv-a4 a4
-
-docker run -i --rm inv-i3 < i3/dados/pontos_quadra.csv > a4/dados/calibracao.json
-
-cat a4/yolo/volei.csv a4/yolo/janela.csv | sort -t, -k1,1n \
-  | docker run -i --rm inv-i2 --fps 29.97 --largura 1280 --altura 720 \
-  | docker run -i --rm --user "$(id -u):$(id -g)" -v "$PWD/a4/dados:/app/dados" \
-      inv-a4 yolo/clipe.mp4 --calib dados/calibracao.json
-```
-
-Isso gera `a4/dados/pipeline.mp4`. Pelo barramento, a mesma cadeia fica assim:
-
-```
-K=34.66.235.91:9093
-docker run -i --rm inv-i3 --kafka $K < i3/dados/pontos_quadra.csv
-cat a4/yolo/volei.csv a4/yolo/janela.csv | sort -t, -k1,1n \
-  | docker run -i --rm inv-i2 --fps 29.97 --largura 1280 --altura 720 --kafka $K
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/a4/dados:/app/dados" \
-    inv-a4 yolo/clipe.mp4 --kafka $K
-```
-
-Para testar sem o broker da nuvem: `docker run -d --rm --name kafka-teste -p 9092:9092
-apache/kafka`, `K=localhost:9092` e `--network=host` em cada `docker run`.
-
-## Mockup · pipeline de teste (José)
-
-`pipeline.py` não roda mais o i2 nem o i3 dentro do processo: recebe as mensagens deles.
-O pixel → metro é feito aqui com a homografia recebida, como o contrato do I3 manda.
-
-O que ficou de fora nesta versão:
-- yolo ao vivo: rode `yolo/detectar.py` para gerar o csv e mande esse csv para o i2;
-- filtro `em_quadra`: ele precisava da H antes do i2, então hoje a torcida também é rastreada;
-- caixa crua da detecção no vídeo.
-
-A detecção vem de `yolo/detectar.py`, que **não é entrega do squad**: é o produtor falso que
-ocupa o lugar do I1 (MOD-1) até o outro grupo entregar. O `torch` mora em `yolo/`, com o
-próprio venv (`yolo/requirements.txt`), e fica fora da imagem.
-
-**Projeto Compoonente**
-- `docs/INV-1_arquitetura.pdf` declara nosso projeto de componente.
-  ele deve ser seguido a fim de manter a ordem e a organização dentro do grupo.
-- Onde lê-se LARA dentro dos componentes, leia-se Diego, e vice e versa.
+O venv do yolo (`old/yolo/.venv`) foi movido de pasta, então os scripts dentro dele apontam
+para o caminho antigo. Use `old/yolo/.venv/bin/python -m pip ...` em vez de `.../bin/pip`, ou
+recrie o venv.

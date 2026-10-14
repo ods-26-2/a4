@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+
+# video bruto da transmissao (77 MB) -- nao entra no repo
+dados/video.mp4
+
+# saidas geradas pelo pipeline
+dados/pipeline.mp4
+dados/calibracao.json
+
+# ambiente e pesos do yolo -- ferramenta de teste, nao entrega
+yolo/.venv/
+*.pt
+
+# quadros extraidos, regenerados com:
+#   ffmpeg -i <clipe>.mp4 -pix_fmt gray -f rawvideo <saida>
+yolo/quadros/
+
+# video anotado do yolo -- regenerado com --ver
+yolo/anotado/
+runs/
+
+# pacote de pesos baixado (zip do treino)
+yolo/*.zip
