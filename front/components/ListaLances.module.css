@@ -1,0 +1,31 @@
+/* altura fixa: a lista rola por dentro e nao empurra o resto da tela */
+.lista { list-style: none; display: grid; gap: 6px; height: 640px; overflow-y: auto; align-content: start; }
+.lista button {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.lista button[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.anulado button { opacity: 0.5; }
+.anulado .tag { text-decoration: line-through; }
+.tag { font: 700 16px var(--fonte-titulo); letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 10px; border-radius: 6px; min-width: 70px; text-align: center; }
+.dentro { background: var(--dentro-bg); color: var(--dentro); }
+.fora { background: var(--fora-bg); color: var(--fora); }
+.duvida { background: var(--duvida-bg); color: var(--duvida); }
+.texto { font-size: 14px; display: grid; min-width: 0; font-variant-numeric: tabular-nums; }
+.texto small { color: var(--muted); }
+.hora { font-size: 13px; color: var(--muted); text-align: right; }
+.vazio { color: var(--muted); padding: 12px; }
+
+@media (max-width: 520px) {
+  .lista { height: 420px; }
+  .lista button { grid-template-columns: auto 1fr; }
+  .hora { grid-column: 1 / -1; text-align: left; }
+}

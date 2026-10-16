@@ -1,0 +1,68 @@
+.lance {
+  min-height: 128px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px;
+  align-items: center;
+  border-radius: 12px;
+  padding: 14px 18px;
+}
+.dentro.lance { background: var(--dentro-bg); color: var(--dentro); }
+.fora.lance { background: var(--fora-bg); color: var(--fora); }
+.duvida.lance { background: var(--duvida-bg); color: var(--duvida); }
+
+.veredito {
+  display: grid;
+  font: 700 clamp(48px, 9vw, 84px) / 1 var(--fonte-titulo);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* texto e "fantasma" ocupam a mesma celula; o fantasma e a palavra mais larga */
+.veredito > span, .veredito::after { grid-area: 1 / 1; }
+.veredito::after { content: "DENTRO"; visibility: hidden; }
+
+.detalhe { display: grid; gap: 2px; color: var(--fg); min-width: 0; }
+.detalhe strong { font: 600 clamp(22px, 3vw, 30px) var(--fonte-titulo); font-variant-numeric: tabular-nums; }
+.detalhe span { font-size: 14px; color: var(--muted); min-height: 2.8em; }
+
+.reserva { min-height: 64px; }
+.aviso {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  background: var(--duvida-bg);
+  border: 1px solid var(--duvida);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 500;
+}
+
+.acoes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; min-height: 76px; }
+.acoes button {
+  height: 76px;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  background: var(--surface2);
+  font: 600 20px var(--fonte-titulo);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.acoes button.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.acoes button.dentro { border-color: var(--dentro); color: var(--dentro); }
+.acoes button.fora { border-color: var(--fora); color: var(--fora); }
+.acoes small { display: block; font: 500 12px var(--fonte-corpo); letter-spacing: 0; text-transform: none; opacity: 0.8; }
+
+.meta {
+  min-height: 100px;
+  align-content: start;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 16px;
+  font-size: 14px;
+}
+.meta div { min-width: 0; overflow-wrap: anywhere; }
+.meta dd { font-weight: 600; }
+
+@media (max-width: 520px) {
+  .lance { grid-template-columns: 1fr; min-height: 0; }
+}

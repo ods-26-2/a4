@@ -1,0 +1,2 @@
+.svg { width: 100%; height: auto; max-height: 250px; display: block; }
+.lado { fill: var(--muted); font: 600 13px var(--fonte-corpo), sans-serif; }
