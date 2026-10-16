@@ -41,7 +41,7 @@ Trilhas confirmadas de uma câmera, publicadas a cada quadro.
 {
   "message_id": string,
   "message_type": "event",
-  "schema": "ods.visao.identidade_atribuida",
+  "schema": "ods.i2.tracks",
   "schema_version": "1.0",
   "producer": "I2",
   "occurred_at": "2026-09-23T14:05:12.369Z",
@@ -53,11 +53,13 @@ Trilhas confirmadas de uma câmera, publicadas a cada quadro.
     "frame?": number,
     "tracks": [
       {
-        "track_id": number,
+        "track_id": string,
         "class": string,
         "state": string,
-        "u_px": number,
-        "v_px": number,
+        "point_px": [number, number],
+        "bbox": [number, number, number, number],
+        "detection_id": string | null,
+        "confidence": number | null,
         "predicted": boolean
       }
     ]
@@ -107,7 +109,7 @@ na mesma partição e chegarem em ordem. `occurred_at` é o instante do fato (`c
 I2, `valid_from` no I3). `ods.visao.calibracao_publicada` é tópico novo, no padrão do guia;
 falta comunicar o nome à TRA-1.
 
-### I2 · `ods.visao.identidade_atribuida`
+### I2 · `ods.i2.tracks`
 
 | Campo | Significado e restrição |
 |---|---|
@@ -115,11 +117,14 @@ falta comunicar o nome à TRA-1.
 | `session_id` | Sessão de captura. O `track_id` só é único dentro do par (`camera_id`, `session_id`). Troca de sessão — reinício, busca ou laço no replay de P6 — encerra as identidades e recomeça a numeração. |
 | `captured_at` | ISO 8601 UTC com milissegundos (`...Z`). Instante de **captura** do quadro, nunca o de chegada. É o timestamp do fato; `published_at` é outra coisa e pode estar atrasado. |
 | `frame?` | Índice do quadro na sessão. Opcional; existe para alinhar com o vídeo em cenário gravado (B4) e no replay (P6/S4). |
-| `tracks` | Lista das trilhas confirmadas naquele quadro. Pode vir vazia. |
-| `track_id` | Inteiro ≥ 1. Decisão de projeto documentada: objeto que sai de vista e volta recebe `track_id` **novo**. Isso muda o que a contagem de S1 e S5 significa, por isso está no contrato e não só no código. |
+| `tracks` | Lista das trilhas naquele quadro. Pode vir vazia. Inclui trilhas confirmadas e, no quadro de encerramento, trilhas com `state: "lost"`. |
+| `track_id` | String. Identificador da trilha dentro da sessão. Decisão de projeto documentada: objeto que sai de vista e volta recebe `track_id` **novo**. Isso muda o que a contagem de S1 e S5 significa, por isso está no contrato e não só no código. |
 | `class` | Enum do contrato de I1: `"ball"` \| `"person"`. Fixada no nascimento da trilha, não muda depois. |
-| `state` | Enum `"confirmed"` \| `"lost"`. Só trilha confirmada é publicada — o estado interno `tentativa` nunca vai ao barramento, porque publicá-lo mediria o falso positivo do detector, não a identidade. `"lost"` aparece uma única vez, no quadro em que a trilha é encerrada: é o sinal de fim para quem conta entrada e saída. |
-| `u_px`, `v_px` | Centro da caixa em pixels, float (subpixel), origem no canto superior esquerdo da imagem de `camera_id`. Pode cair **fora** das dimensões do quadro quando `predicted` é `true`. |
+| `state` | Enum `"confirmed"` \| `"lost"`. Trilhas confirmadas aparecem enquanto o objeto está à vista. `"lost"` aparece uma **única vez**, no quadro em que a trilha é encerrada: é o sinal de fim para quem conta entrada e saída. |
+| `point_px` | `[u, v]` em pixels, float (subpixel), origem no canto superior esquerdo da imagem de `camera_id`. É o ponto de contato com o solo — **base** da caixa (`bbox`), centro horizontal: `[(x1+x2)/2, y2]`. Para a bola, onde a caixa não tem "pé", usa-se o centro-inferior da bbox como melhor aproximação do ponto de contato. Pode cair **fora** das dimensões do quadro quando `predicted` é `true`. |
+| `bbox` | `[x1, y1, x2, y2]` em pixels, float. Caixa delimitadora da detecção de I1 (canto superior esquerdo, canto inferior direito). É `null` quando `predicted` é `true`, porque não houve detecção naquele quadro. |
+| `detection_id` | String. Identificador da detecção de I1 que originou esta associação. É `null` quando `predicted` é `true`. Permite rastrear a decisão de identidade até a detecção bruta. |
+| `confidence` | Float entre 0 e 1. Confiança da detecção de I1 propagada por I2. É `null` quando `predicted` é `true`. |
 | `predicted` | `true` = não houve detecção neste quadro; a posição vem da predição por velocidade constante. É o mecanismo que segura a identidade na oclusão e no borrão da bola. Quem precisa de posição medida filtra por `predicted: false`. |
 
 **Cadência** · um evento por quadro por câmera (30/s na câmera de referência).
