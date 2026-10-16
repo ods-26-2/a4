@@ -13,6 +13,7 @@ lances, para o front já ter com o que trabalhar.
 a4/
 ├── back/    API do A4 (FastAPI). Hoje é mock: inventa um lance a cada 6 s
 ├── front/   tela do árbitro (Next.js 16)
+├── docker-compose.yml   kafka local para testar o barramento
 ├── docs/    como usar, contrato da API e documentos de referência do squad
 └── old/     o que existia antes do Sprint 3: pipeline com Kafka, rule engine, yolo
 ```

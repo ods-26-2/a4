@@ -1,16 +1,19 @@
-"""mock da api do a4 -- o contrato da secao 5 do planejamento do sprint 3
+"""api do a4 -- o contrato da secao 5 do planejamento do sprint 3
 
     pip install -r requirements.txt
     uvicorn main:app --reload --port 8000
+    A4_KAFKA=localhost:9092 uvicorn main:app --reload --port 8000
 
-nao le kafka nem roda o rule engine: a cada INTERVALO_S segundos inventa um lance
-na partida "demo", para o front ter o que mostrar. o placar sai sempre das decisoes,
-entao corrigir ou desfazer um lance recalcula tudo.
+o lance ainda e inventado: a cada INTERVALO_S segundos entra um na partida "demo", para o
+front ter o que mostrar. com A4_KAFKA o back tambem le o barramento (por enquanto so a
+calibracao do i3). o placar sai sempre das decisoes, entao corrigir ou desfazer um lance
+recalcula tudo.
 """
 import asyncio
 import json
 import os
 import random
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,6 +23,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import arbitragem
+
+KAFKA = os.getenv("A4_KAFKA")
 INTERVALO_S = float(os.getenv("A4_INTERVALO_S", "6"))
 VEREDITOS = ("dentro", "fora", "duvida")
 
@@ -31,13 +37,35 @@ async def ciclo(_app):
         while True:
             await asyncio.sleep(INTERVALO_S)
             if not demo["encerrada"]:
-                lance_falso(demo)
+                lance_exemplo(demo)
     tarefa = asyncio.create_task(gerar())
+    parar = lambda: None
+    if KAFKA:
+        import barramento
+        parar = barramento.consumir(KAFKA, [barramento.CALIBRACAO],
+                                    asyncio.get_running_loop(), receber)
     yield
+    parar()
     tarefa.cancel()
 
 
-app = FastAPI(title="A4 · mock da api de arbitragem", lifespan=ciclo)
+calibracoes = {}                                      # source_id -> Calibracao vigente
+
+
+def receber(topico, ev):
+    """mensagem valida do barramento, ja no loop do fastapi"""
+    if topico == "ods.i3.calibration":
+        try:
+            cal = arbitragem.calibracao(ev)
+        except (KeyError, TypeError, ValueError) as erro:
+            print(f"a4: calibracao descartada, payload fora da 6c: {erro!r}", file=sys.stderr)
+            return
+        calibracoes[cal.source_id] = cal              # a ultima publicada vale
+        print(f"a4: calibracao {cal.versao} de {cal.source_id} (rms {cal.rms_cm} cm)",
+              file=sys.stderr)
+
+
+app = FastAPI(title="A4 · api de arbitragem", lifespan=ciclo)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
 
@@ -102,7 +130,7 @@ def mudou(p):
     return visao(p)
 
 
-def lance_falso(p):
+def lance_exemplo(p):
     v = random.choices(VEREDITOS, weights=(5, 4, 1))[0]
     banda = round(random.uniform(8, 25), 1)
     dist = {"dentro": -random.uniform(banda, 150), "fora": random.uniform(banda, 150),
@@ -166,12 +194,12 @@ def desfazer(did: str):
 @app.post("/decisoes/{did}/replay")
 def replay(did: str):
     buscar_decisao(did)
-    return {"clip_id": None, "aviso": "mock: replay depende do S4"}
+    return {"clip_id": None, "aviso": "ainda nao ligado ao S4"}
 
 
 @app.post("/camera/enquadrar")
 def enquadrar(pan_deg: float = 0.0, tilt_deg: float = 0.0):
-    return {"status": "OK", "pan_deg": pan_deg, "tilt_deg": tilt_deg, "aviso": "mock: sem P7"}
+    return {"status": "OK", "pan_deg": pan_deg, "tilt_deg": tilt_deg, "aviso": "ainda nao ligado ao P7"}
 
 
 @app.get("/eventos")

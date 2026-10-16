@@ -3,9 +3,10 @@
 Guia para rodar o A4 do Sprint 3 e para quem vai mexer no front. Todos os comandos rodam a
 partir da pasta `a4/`.
 
-O back hoje é um **mock**: não lê o Kafka nem roda o rule engine. Ele cria uma partida
-chamada `demo` e inventa um lance a cada 6 s. O contrato da API já é o definitivo, então o
-front feito contra o mock continua funcionando quando o back de verdade entrar.
+Os lances do back ainda são inventados: ele cria uma partida chamada `demo` e põe um lance a
+cada 6 s. Com `A4_KAFKA` ele também lê o barramento, por enquanto só a calibração do I3
+(seção 1.1). O contrato da API já é o definitivo, então o front feito agora continua
+funcionando quando os lances reais entrarem.
 
 ---
 
@@ -37,6 +38,29 @@ curl -X POST localhost:8000/pontos/<decisao_id>/desfazer
 ```
 
 O `decisao_id` vem do `GET /partidas/demo`.
+
+### 1.1 Barramento local
+
+Kafka local só para o protótipo do squad (guia B2, seção 1); a integração com os outros
+squads é no broker do projeto. Precisa de Docker.
+
+```
+docker compose up -d                                            # kafka em localhost:9092
+A4_KAFKA=localhost:9092 back/.venv/bin/uvicorn main:app --app-dir back --port 8000
+```
+
+Em outro terminal, publicar a calibração pelo I3 (repo `i3/`, com o venv dele):
+
+```
+cd ../i3
+python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py --kafka localhost:9092 < dados/pontos_quadra.csv
+```
+
+O back loga `a4: calibracao cal-cam-ref-1 de cam-ref (rms … cm)`. A calibração fica retida
+no tópico `ods.i3.calibration`: reiniciar o back lê a última de novo, sem republicar.
+Mensagem fora do envelope da 6c é descartada com o motivo no log. Para zerar o broker:
+`docker compose down`.
 
 ---
 
@@ -83,8 +107,8 @@ arquitetura 6c). Mudança aqui precisa ser combinada entre back e front.
 | POST | `/partidas/{id}/encerrar` | encerrar; o mock para de inventar lances | Partida |
 | POST | `/decisoes/{id}/correcao` | árbitro troca o veredito `{ veredito, operador }` | Decisao |
 | POST | `/pontos/{id}/desfazer` | anula o lance; ele deixa de contar no placar | Partida |
-| POST | `/decisoes/{id}/replay` | pedir o clipe do lance (no mock, sempre `clip_id: null`) | `{ clip_id }` |
-| POST | `/camera/enquadrar?pan_deg=&tilt_deg=` | apontar a câmera (no mock, só ecoa) | `{ status, pan_deg, tilt_deg }` |
+| POST | `/decisoes/{id}/replay` | pedir o clipe do lance ao S4 (ainda não ligado: devolve `clip_id: null`) | `{ clip_id }` |
+| POST | `/camera/enquadrar?pan_deg=&tilt_deg=` | apontar a câmera pelo P7 (ainda não ligado: só ecoa) | `{ status, pan_deg, tilt_deg }` |
 | GET | `/eventos?partida={id}` | SSE: evento `partida` com a Partida inteira a cada mudança | `text/event-stream` |
 
 ### Decisao
