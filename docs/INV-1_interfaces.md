@@ -131,10 +131,6 @@ falta comunicar o nome à TRA-1.
 
 **Limitações declaradas**
 
-- `u_px,v_px` é o centro da caixa. Para ocupação de zona no plano do chão o ponto útil é
-  o de contato com o solo, que no caso de pessoa fica abaixo do centro; I2 não publica
-  esse ponto hoje.
-- A confiança vinda de I1 não é propagada — I2 ainda não a usa.
 - O raio de associação é calibrado para 1920 px e 30 fps e escalado para outras câmeras;
   resolução ou fps fora do declarado degradam o rastreio silenciosamente.
 
