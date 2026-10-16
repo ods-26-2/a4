@@ -1,0 +1,6 @@
+.form { display: grid; gap: 12px; }
+.campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.campo { display: grid; gap: 4px; font-size: 14px; font-weight: 600; }
+.campo input, .campo select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; min-height: 46px; font-weight: 400; }
+.confirma { background: var(--fora-bg); border: 1px solid var(--fora); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
+.linha { display: flex; flex-wrap: wrap; gap: 10px; }

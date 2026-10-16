@@ -1,0 +1,20 @@
+.video {
+  aspect-ratio: 16 / 9;
+  max-width: 100%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--surface2), var(--bg));
+}
+.camera { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.pad { display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(3, 52px); gap: 6px; }
+.pad button { border-radius: 10px; border: 1px solid var(--line); background: var(--surface2); font-size: 20px; }
+.pad button:nth-child(5) { font-size: 12px; font-weight: 600; }
+.angulos { display: grid; gap: 2px; font-size: 14px; }
+.angulos b { font: 600 22px var(--fonte-titulo); font-variant-numeric: tabular-nums; }
+.status { font-size: 12px; color: var(--muted); }
