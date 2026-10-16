@@ -1,103 +1,64 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { corrigir, desfazer, ouvirPartida, type Decisao, type Partida } from "@/lib/api";
+import { useState } from "react";
+import Gestao from "@/components/Gestao";
+import Placar from "@/components/Placar";
+import ReplayCamera from "@/components/ReplayCamera";
+import { usePartida } from "@/hooks/usePartida";
+import { useAviso } from "@/hooks/useAviso";
 import s from "./page.module.css";
 
-const PARTIDA = "demo"; // a unica que o mock cria sozinho
-const OPERADOR = "arbitro";
+const PARTIDA_INICIAL = "demo"; // a unica que o mock cria sozinho
 
+/**
+ * Tela do arbitro. Aqui so mora o estado da tela (qual partida, qual lance, qual aba) e
+ * a ligacao entre componentes e API; cada bloco visual esta em components/.
+ */
 export default function Home() {
-  const [partida, setPartida] = useState<Partida | null>(null);
-  const [erro, setErro] = useState("");
+  const [partidaId, setPartidaId] = useState(PARTIDA_INICIAL);
+  const [aba, setAba] = useState<"partida" | "gestao">("partida");
+  const { partida, offline, trocar } = usePartida(partidaId);
+  const { aviso, avisar } = useAviso();
 
-  useEffect(
-    () =>
-      ouvirPartida(
-        PARTIDA,
-        (p) => {
-          setPartida(p);
-          setErro("");
-        },
-        () => setErro("sem conexão com o back — ele está rodando?"),
-      ),
-    [],
-  );
-
-  const agir = (f: () => Promise<unknown>) => f().catch((e) => setErro(String(e)));
-
-  if (!partida) return <main className={s.main}>{erro || "conectando…"}</main>;
-
-  const { placar } = partida;
-  const lances = [...partida.decisoes].reverse();
-  const ultimo = lances.find((d) => !d.anulada);
+  // enquanto o lance em foco nao tem seletor (A4.3c, do Davi), vale o mais novo
+  const lance = partida?.decisoes.at(-1);
 
   return (
-    <main className={s.main}>
-      {erro && <p className={s.erro}>{erro}</p>}
-
-      <section className={s.placar}>
-        <Time nome={partida.time_a} sets={placar.sets.A} pontos={placar.pontos.A} />
-        <span className={s.x}>×</span>
-        <Time nome={partida.time_b} sets={placar.sets.B} pontos={placar.pontos.B} />
-      </section>
-
-      {ultimo && (
-        <section className={`${s.ultimo} ${s[ultimo.veredito]}`}>
-          <strong>{ultimo.veredito.toUpperCase()}</strong>
-          <span>
-            {ultimo.distancia_cm} cm ± {ultimo.banda_cm} cm · lado {ultimo.lado}
-          </span>
-        </section>
-      )}
-
-      <ul className={s.lances}>
-        {lances.map((d) => (
-          <Lance
-            key={d.decisao_id}
-            d={d}
-            aoCorrigir={(v) => agir(() => corrigir(d.decisao_id, v, OPERADOR))}
-            aoDesfazer={() => agir(() => desfazer(d.decisao_id))}
-          />
-        ))}
-      </ul>
-    </main>
-  );
-}
-
-function Time({ nome, sets, pontos }: { nome: string; sets: number; pontos: number }) {
-  return (
-    <div className={s.time}>
-      <span>{nome}</span>
-      <b>{pontos}</b>
-      <small>sets {sets}</small>
-    </div>
-  );
-}
-
-function Lance({
-  d,
-  aoCorrigir,
-  aoDesfazer,
-}: {
-  d: Decisao;
-  aoCorrigir: (v: "dentro" | "fora") => void;
-  aoDesfazer: () => void;
-}) {
-  return (
-    <li className={d.anulada ? s.anulado : undefined}>
-      <span className={`${s.tag} ${s[d.veredito]}`}>{d.veredito}</span>
-      <span>
-        {new Date(d.instante).toLocaleTimeString()} · {d.distancia_cm} cm · lado {d.lado}
-        {d.origem === "corrigida" && ` · corrigido (era ${d.veredito_automatico})`}
-      </span>
-      {!d.anulada && (
-        <span className={s.botoes}>
-          <button onClick={() => aoCorrigir("dentro")}>dentro</button>
-          <button onClick={() => aoCorrigir("fora")}>fora</button>
-          <button onClick={aoDesfazer}>desfazer</button>
+    <div className={s.pagina}>
+      <header className={s.barra}>
+        <h1>A4 · Arbitragem</h1>
+        <nav className={s.abas} aria-label="Telas">
+          <button aria-current={aba === "partida"} onClick={() => setAba("partida")}>Partida</button>
+          <button aria-current={aba === "gestao"} onClick={() => setAba("gestao")}>Gestão</button>
+        </nav>
+        <span className={`${s.conexao} ${offline ? s.offline : ""}`}>
+          <i />{offline ? "Sem conexão com o back" : "Ligado ao back"}
         </span>
+      </header>
+
+      {aba === "gestao" ? (
+        <Gestao
+          partida={partida}
+          aviso={avisar}
+          aoCriar={(p) => { setPartidaId(p.id); setAba("partida"); }}
+          aoEncerrar={trocar}
+        />
+      ) : !partida ? (
+        <p className={s.vazio}>{offline ? "Sem conexão com o back. Ele está rodando?" : "Conectando…"}</p>
+      ) : (
+        <>
+          <Placar partida={partida} />
+          <div className={s.corpo}>
+            <div className={s.coluna}>
+              {/* A4.3c e A4.3d (Davi): indicacao do lance, quadra e correcao manual entram aqui */}
+              <ReplayCamera lance={lance} aviso={avisar} />
+            </div>
+            {/* A4.3c (Davi): lista de lances entra aqui */}
+          </div>
+        </>
       )}
-    </li>
+
+      {aviso && <div className={s.aviso} role="status">{aviso}</div>}
+    </div>
   );
 }

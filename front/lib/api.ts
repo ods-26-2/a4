@@ -40,6 +40,25 @@ async function post<T>(caminho: string, corpo?: unknown): Promise<T> {
   return r.json();
 }
 
+export interface NovaPartida {
+  time_a: string;
+  time_b: string;
+  source_id: string;
+}
+
+export const criarPartida = (n: NovaPartida) => post<Partida>("/partidas", n);
+export const encerrarPartida = (id: string) => post<Partida>(`/partidas/${id}/encerrar`);
+
+// no mock o clip_id vem null e "aviso" explica por que (o S4 ainda nao existe)
+export const pedirReplay = (id: string) =>
+  post<{ clip_id: string | null; aviso?: string }>(`/decisoes/${id}/replay`);
+
+// pan e tilt vao na query, como o back espera
+export const enquadrar = (pan_deg: number, tilt_deg: number) =>
+  post<{ status: string; pan_deg: number; tilt_deg: number }>(
+    `/camera/enquadrar?pan_deg=${pan_deg}&tilt_deg=${tilt_deg}`,
+  );
+
 export const corrigir = (id: string, veredito: Veredito, operador: string) =>
   post<Decisao>(`/decisoes/${id}/correcao`, { veredito, operador });
 
