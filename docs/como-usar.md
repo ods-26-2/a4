@@ -146,3 +146,49 @@ lógica extra no front.
 | erro de CORS no console | back de outro lugar, sem o middleware | o mock libera qualquer origem; confira se está rodando o `back/main.py` |
 | placar zerou | o back reiniciou (tudo fica em memória) | é esperado no mock |
 | `uvicorn` não para no Ctrl+C | conexão SSE aberta | Ctrl+C de novo, ou feche a aba |
+
+---
+
+## 5. Score Manager e integração com P7/Kafka
+
+O placar é recalculado a partir de `decisoes` sempre que entra um lance automático, o árbitro corrige o veredito ou anula um lance. A mesma decisão automática não é inserida duas vezes se chegar novamente com o mesmo `decisao_id`. O front não se conecta ao Kafka: todas as ações passam pela API A4.
+
+### Modo local de desenvolvimento
+
+Por padrão, `A4_MODO_DEMO=true` gera lances fictícios para testar a interface. Para desligar o gerador:
+
+```bash
+A4_MODO_DEMO=false uvicorn main:app --reload --port 8000
+```
+
+### Conectar ao Kafka real
+
+Instale as dependências atualizadas e configure o backend:
+
+```bash
+pip install -r requirements.txt
+export A4_KAFKA_ENABLED=true
+export A4_KAFKA_BOOTSTRAP_SERVERS=34.66.235.91:9093
+export A4_MODO_DEMO=false
+uvicorn main:app --reload --port 8000
+```
+
+No PowerShell, use `$env:A4_KAFKA_ENABLED="true"`, `$env:A4_KAFKA_BOOTSTRAP_SERVERS="34.66.235.91:9093"` e `$env:A4_MODO_DEMO="false"` antes de iniciar o Uvicorn. As variáveis devem ser definidas no terminal do backend.
+
+O A4 publica comandos de câmera em `ods.p7.move.command` usando um envelope com `message_type: "command"`, `schema: "ods.p7.move.command"` e `payload.pan_deg`/`payload.tilt_deg`. Ele consome `ods.p7.state` para atualizar a posição mostrada na interface e `ods.regra.evento_consolidado` para receber decisões automáticas. O evento de regra deve conter `payload.veredito` (`dentro`, `fora` ou `duvida`) e `payload.lado` (`A` ou `B`); também são aceitos os aliases `verdict`, `side`, `decision` e `decisao`.
+
+Endpoints úteis:
+
+- `GET /health`: informa se a integração Kafka está habilitada.
+- `GET /camera/estado`: posição e estado mais recente recebido em `ods.p7.state`.
+- `POST /camera/enquadrar?pan_deg=10&tilt_deg=5`: publica um comando em `ods.p7.move.command`. O ângulo mostrado na tela só muda quando chega o estado confirmado do P7.
+
+Se o Kafka não estiver habilitado, `/camera/enquadrar` responde HTTP 503 em vez de fingir que a câmera se moveu. O host padrão é o do guia de Kafka do projeto; ajuste `A4_KAFKA_BOOTSTRAP_SERVERS` se o ambiente da equipe usar outro broker. Credenciais/TLS adicionais, se exigidas pelo cluster, devem ser adicionadas à configuração do cliente em `back/kafka_bridge.py`.
+
+Teste rápido do Score Manager e do contrato de integração:
+
+```bash
+python test_score_manager.py
+python test_placar.py
+python test_arbitragem.py
+```

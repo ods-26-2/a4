@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 numpy==2.5.3
 opencv-python-headless==5.0.0.93
+confluent-kafka>=2.6,<3.0
