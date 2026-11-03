@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from kafka_bridge import KafkaBridge
+from arbitragem import Detector, calibracao as parse_calibracao_a4
 
 logging.basicConfig(level=os.getenv("A4_LOG_LEVEL", "INFO"))
 log = logging.getLogger("a4")
@@ -34,6 +35,8 @@ VEREDITOS = ("dentro", "fora", "duvida")
 
 partidas: dict[str, dict[str, Any]] = {}
 kafka: KafkaBridge | None = None
+detector: Detector | None = None
+calibracoes: dict[str, Any] = {}   # source_id -> Calibracao do arbitragem.py
 
 
 def agora():
@@ -128,6 +131,52 @@ def receber_decisao_automatica(decisao: dict[str, Any]):
         log.info("Decisão automática %s adicionada à partida %s", decisao.get("decisao_id"), p["id"])
 
 
+def receber_calibracao_i3(envelope: dict[str, Any]):
+    """Recebe ods.i3.calibration e guarda a calibração para o Detector."""
+    try:
+        cal = parse_calibracao_a4(envelope)
+        calibracoes[cal.source_id] = cal
+        log.info("Calibração I3 recebida: source_id=%s versão=%s rms=%.1f cm",
+                 cal.source_id, cal.versao, cal.rms_cm)
+    except Exception:
+        log.exception("Erro processando calibração I3")
+
+
+def receber_posicao_s1(envelope: dict[str, Any]):
+    """Recebe ods.s1.position e alimenta o Detector com posições da bola.
+
+    Para cada trilha com class='ball', envia a amostra ao Detector.
+    Se o Detector reconhece um quique, injeta a decisão no Score Manager.
+    """
+    if detector is None:
+        return
+    try:
+        source_id = envelope.get("source_id", "cam0")
+        cal = calibracoes.get(source_id)
+        if cal is None:
+            return  # sem calibração, não dá para arbitrar
+        captured_at = envelope.get("captured_at", "")
+        try:
+            t_s = datetime.fromisoformat(captured_at.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            return
+        payload = envelope.get("payload", {})
+        for pos in payload.get("positions", []):
+            if pos.get("class") != "ball":
+                continue
+            track_id = pos.get("track_id", "desconhecido")
+            point_px = pos.get("point_px")
+            if point_px is None or len(point_px) < 2:
+                continue
+            decisao = detector.amostra(cal, track_id, t_s, tuple(point_px))
+            if decisao is not None:
+                log.info("Quique detectado via S1: track=%s veredito=%s dist=%.1f cm",
+                         track_id, decisao["veredito"], decisao["distancia_cm"])
+                receber_decisao_automatica(decisao)
+    except Exception:
+        log.exception("Erro processando posição S1")
+
+
 def lance_falso(p):
     """Gera lances fictícios apenas no modo demo local, nunca com Kafka habilitado."""
     v = random.choices(VEREDITOS, weights=(5, 4, 1))[0]
@@ -144,11 +193,15 @@ def lance_falso(p):
 
 @asynccontextmanager
 async def ciclo(_app):
-    global kafka
+    global kafka, detector
     demo = nova_partida(pid="demo")
     tarefa = None
     if KAFKA_HABILITADO:
-        kafka = KafkaBridge(receber_decisao_automatica)
+        try:
+            detector = Detector()
+        except Exception:
+            log.exception("Detector de arbitragem não pôde ser inicializado (opencv disponível?)")
+        kafka = KafkaBridge(receber_decisao_automatica, receber_posicao_s1, receber_calibracao_i3)
         try:
             kafka.start()
         except Exception:
@@ -194,7 +247,9 @@ class Correcao(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "kafka_habilitado": bool(kafka and kafka.enabled),
-            "modo_demo": MODO_DEMO and not KAFKA_HABILITADO}
+            "modo_demo": MODO_DEMO and not KAFKA_HABILITADO,
+            "detector_ativo": detector is not None,
+            "calibracoes_carregadas": list(calibracoes.keys())}
 
 
 @app.post("/partidas")
