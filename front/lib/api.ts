@@ -54,9 +54,26 @@ export const pedirReplay = (id: string) =>
   post<{ clip_id: string | null; aviso?: string }>(`/decisoes/${id}/replay`);
 
 // pan e tilt vao na query, como o back espera
+export interface EstadoCamera {
+  conectado: boolean;
+  disponivel: boolean;
+  estado_recebido?: boolean;
+  pan_deg: number;
+  tilt_deg: number;
+  atualizado_em: string | null;
+  topico: string;
+  mensagem: string;
+}
+
+export const estadoCamera = async (): Promise<EstadoCamera> => {
+  const r = await fetch(`${API}/camera/estado`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`/camera/estado: ${r.status} ${await r.text()}`);
+  return r.json();
+};
+
 export const enquadrar = (pan_deg: number, tilt_deg: number) =>
-  post<{ status: string; pan_deg: number; tilt_deg: number }>(
-    `/camera/enquadrar?pan_deg=${pan_deg}&tilt_deg=${tilt_deg}`,
+  post<{ status: string; command_id?: string; pan_deg: number; tilt_deg: number; topico?: string; aviso?: string }>(
+    `/camera/enquadrar?pan_deg=${encodeURIComponent(pan_deg)}&tilt_deg=${encodeURIComponent(tilt_deg)}`,
   );
 
 export const corrigir = (id: string, veredito: Veredito, operador: string) =>

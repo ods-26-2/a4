@@ -3,10 +3,9 @@
 Guia para rodar o A4 do Sprint 3 e para quem vai mexer no front. Todos os comandos rodam a
 partir da pasta `a4/`.
 
-Os lances do back ainda são inventados: ele cria uma partida chamada `demo` e põe um lance a
-cada 6 s. Com `A4_KAFKA` ele também lê o barramento, por enquanto só a calibração do I3
-(seção 1.1). O contrato da API já é o definitivo, então o front feito agora continua
-funcionando quando os lances reais entrarem.
+Sem Kafka o back inventa os lances: cria uma partida chamada `demo` e põe um lance a cada
+6 s. Com `A4_KAFKA_ENABLED=true` o lance é de verdade: o back lê a calibração do I3 e a
+posição da bola do S1 e acha o quique (seções 1.1 e 5).
 
 ---
 
@@ -46,7 +45,8 @@ squads é no broker do projeto. Precisa de Docker.
 
 ```
 docker compose up -d                                            # kafka em localhost:9092
-A4_KAFKA=localhost:9092 back/.venv/bin/uvicorn main:app --app-dir back --port 8000
+A4_KAFKA_ENABLED=true A4_KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
+    back/.venv/bin/uvicorn main:app --app-dir back --port 8000
 ```
 
 Em outro terminal, publicar a calibração pelo I3 (repo `i3/`, com o venv dele):
@@ -57,7 +57,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python main.py --kafka localhost:9092 < dados/pontos_quadra.csv
 ```
 
-O back loga `a4: calibracao cal-cam-ref-1 de cam-ref (rms … cm)`. A calibração fica retida
+O back loga `Calibração I3 recebida: source_id=cam-ref versão=cal-cam-ref-1 …`. A calibração fica retida
 no tópico `ods.i3.calibration`: reiniciar o back lê a última de novo, sem republicar.
 Mensagem fora do envelope da 6c é descartada com o motivo no log. Para zerar o broker:
 `docker compose down`.
@@ -170,3 +170,49 @@ lógica extra no front.
 | erro de CORS no console | back de outro lugar, sem o middleware | o mock libera qualquer origem; confira se está rodando o `back/main.py` |
 | placar zerou | o back reiniciou (tudo fica em memória) | é esperado no mock |
 | `uvicorn` não para no Ctrl+C | conexão SSE aberta | Ctrl+C de novo, ou feche a aba |
+
+---
+
+## 5. Score Manager e integração com P7/Kafka
+
+O placar é recalculado a partir de `decisoes` sempre que entra um lance automático, o árbitro corrige o veredito ou anula um lance. A mesma decisão automática não é inserida duas vezes se chegar novamente com o mesmo `decisao_id`. O front não se conecta ao Kafka: todas as ações passam pela API A4.
+
+### Modo local de desenvolvimento
+
+Por padrão, `A4_MODO_DEMO=true` gera lances fictícios para testar a interface. Para desligar o gerador:
+
+```bash
+A4_MODO_DEMO=false uvicorn main:app --reload --port 8000
+```
+
+### Conectar ao Kafka real
+
+Instale as dependências atualizadas e configure o backend:
+
+```bash
+pip install -r requirements.txt
+export A4_KAFKA_ENABLED=true
+export A4_KAFKA_BOOTSTRAP_SERVERS=34.66.235.91:9093
+export A4_MODO_DEMO=false
+uvicorn main:app --reload --port 8000
+```
+
+No PowerShell, use `$env:A4_KAFKA_ENABLED="true"`, `$env:A4_KAFKA_BOOTSTRAP_SERVERS="34.66.235.91:9093"` e `$env:A4_MODO_DEMO="false"` antes de iniciar o Uvicorn. As variáveis devem ser definidas no terminal do backend.
+
+O A4 publica comandos de câmera em `ods.p7.move.command` usando um envelope com `message_type: "command"`, `schema: "ods.p7.move.command"` e `payload.pan_deg`/`payload.tilt_deg`. Ele consome `ods.p7.state` para atualizar a posição mostrada na interface e `ods.regra.evento_consolidado` para receber decisões automáticas. O evento de regra deve conter `payload.veredito` (`dentro`, `fora` ou `duvida`) e `payload.lado` (`A` ou `B`); também são aceitos os aliases `verdict`, `side`, `decision` e `decisao`.
+
+Endpoints úteis:
+
+- `GET /health`: informa se a integração Kafka está habilitada.
+- `GET /camera/estado`: posição e estado mais recente recebido em `ods.p7.state`.
+- `POST /camera/enquadrar?pan_deg=10&tilt_deg=5`: publica um comando em `ods.p7.move.command`. O ângulo mostrado na tela só muda quando chega o estado confirmado do P7.
+
+Se o Kafka não estiver habilitado, `/camera/enquadrar` responde HTTP 503 em vez de fingir que a câmera se moveu. O host padrão é o do guia de Kafka do projeto; ajuste `A4_KAFKA_BOOTSTRAP_SERVERS` se o ambiente da equipe usar outro broker. Credenciais/TLS adicionais, se exigidas pelo cluster, devem ser adicionadas à configuração do cliente em `back/kafka_bridge.py`.
+
+Teste rápido do Score Manager e do contrato de integração:
+
+```bash
+python test_score_manager.py
+python test_placar.py
+python test_arbitragem.py
+```
