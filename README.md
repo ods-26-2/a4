@@ -14,6 +14,7 @@ a4/
 ├── back/    API do A4 (FastAPI). Hoje é mock: inventa um lance a cada 6 s
 ├── front/   tela do árbitro (Next.js 16)
 ├── docs/    como usar, contrato da API e documentos de referência do squad
+├── modelo/  artefato MODEL do A4 (bola de vôlei) que o I1 do MOD-1 roda; modelo/exportar.py o gera
 └── old/     o que existia antes do Sprint 3: pipeline com Kafka, rule engine, yolo
 ```
 

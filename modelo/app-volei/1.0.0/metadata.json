@@ -1,0 +1,16 @@
+{
+    "artifact_id": "app-volei",
+    "artifact_version": "1.0.0",
+    "classes": [
+        "ball"
+    ],
+    "input_shape": [
+        1,
+        3,
+        1280,
+        1280
+    ],
+    "precision": "FP32",
+    "onnx_file": "app-volei.onnx",
+    "hash_sha256": "7c26d0b6ae46263c9ebc76a4017f21f8474f95909d838a4af04e598b7db9486a"
+}
