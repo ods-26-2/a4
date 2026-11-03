@@ -1,7 +1,10 @@
 """Integração opcional do A4 com o barramento Kafka do ODS.
 
 Ative com A4_KAFKA_ENABLED=true. O frontend nunca acessa Kafka diretamente:
-este módulo publica comandos do P7 e consome estado do P7 e eventos consolidados da regra.
+este módulo pu
+
+blica comandos do P7 e consome estado do P7, eventos consolidados
+da regra, posições do S1 e calibrações do I3.
 """
 from __future__ import annotations
 
@@ -18,6 +21,8 @@ log = logging.getLogger("a4.kafka")
 TOPICO_COMANDO_P7 = "ods.p7.move.command"
 TOPICO_ESTADO_P7 = "ods.p7.state"
 TOPICO_REGRA = os.getenv("A4_KAFKA_TOPIC_REGRA", "ods.regra.evento_consolidado")
+TOPICO_S1_POSITION = "ods.s1.position"
+TOPICO_I3_CALIBRATION = "ods.i3.calibration"
 
 
 def agora() -> str:
@@ -27,9 +32,13 @@ def agora() -> str:
 class KafkaBridge:
     """Producer/consumer em thread dedicada; a aplicação continua utilizável sem Kafka."""
 
-    def __init__(self, ao_receber_decisao: Callable[[dict[str, Any]], None]):
+    def __init__(self, ao_receber_decisao: Callable[[dict[str, Any]], None],
+                 ao_receber_posicao_s1: Callable[[dict[str, Any]], None] | None = None,
+                 ao_receber_calibracao: Callable[[dict[str, Any]], None] | None = None):
         self.bootstrap = os.getenv("A4_KAFKA_BOOTSTRAP_SERVERS", "34.66.235.91:9093")
         self._ao_receber_decisao = ao_receber_decisao
+        self._ao_receber_posicao_s1 = ao_receber_posicao_s1
+        self._ao_receber_calibracao = ao_receber_calibracao
         self._producer = None
         self._consumer = None
         self._thread: threading.Thread | None = None
@@ -70,7 +79,12 @@ class KafkaBridge:
             "auto.offset.reset": "latest",
             "enable.auto.commit": True,
         })
-        self._consumer.subscribe([TOPICO_ESTADO_P7, TOPICO_REGRA])
+        topicos = [TOPICO_ESTADO_P7, TOPICO_REGRA]
+        if self._ao_receber_posicao_s1 is not None:
+            topicos.append(TOPICO_S1_POSITION)
+        if self._ao_receber_calibracao is not None:
+            topicos.append(TOPICO_I3_CALIBRATION)
+        self._consumer.subscribe(topicos)
         self._enabled = True
         with self._lock:
             self._camera_state.update({
@@ -80,7 +94,7 @@ class KafkaBridge:
             })
         self._thread = threading.Thread(target=self._consumir, name="a4-kafka-consumer", daemon=True)
         self._thread.start()
-        log.info("Kafka habilitado em %s; consumindo %s e %s", self.bootstrap, TOPICO_ESTADO_P7, TOPICO_REGRA)
+        log.info("Kafka habilitado em %s; consumindo %s", self.bootstrap, topicos)
 
     def close(self) -> None:
         self._stop.set()
@@ -152,6 +166,10 @@ class KafkaBridge:
                         decisao = self._normalizar_decisao(envelope)
                         if decisao:
                             self._ao_receber_decisao(decisao)
+                    elif msg.topic() == TOPICO_S1_POSITION and self._ao_receber_posicao_s1:
+                        self._ao_receber_posicao_s1(envelope)
+                    elif msg.topic() == TOPICO_I3_CALIBRATION and self._ao_receber_calibracao:
+                        self._ao_receber_calibracao(envelope)
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
                     log.warning("Mensagem inválida em %s: %s", msg.topic(), exc)
                 except Exception:
