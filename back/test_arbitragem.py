@@ -26,4 +26,10 @@ amostras = [Amostra(t, (12.0 + 10 * (t - 0.5), 4.0), abs(t - 0.5))
 tc, (x, y) = ponto_de_contato(amostras)
 assert abs(tc - 0.5) < 1e-3 and abs(x - 12.0) < 0.01 and abs(y - 4.0) < 0.01, (tc, x, y)
 
+# o mesmo quique com t_s em epoch, como chega de captured_at
+EPOCH = 1_793_000_000.0
+amostras = [Amostra(a.t_s + EPOCH, a.ponto_m, a.altura) for a in amostras]
+tc, (x, y) = ponto_de_contato(amostras)
+assert abs(tc - EPOCH - 0.5) < 1e-3 and abs(x - 12.0) < 0.01 and abs(y - 4.0) < 0.01, (tc - EPOCH, x, y)
+
 print("arbitragem ok")

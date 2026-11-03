@@ -6,3 +6,6 @@ __pycache__/
 # front (o front/.gitignore cobre o resto)
 node_modules/
 .next/
+
+# zonas geradas pelo back
+back/artefatos/

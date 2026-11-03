@@ -191,4 +191,46 @@ Teste rápido do Score Manager e do contrato de integração:
 python test_score_manager.py
 python test_placar.py
 python test_arbitragem.py
+python test_zonas.py
 ```
+
+---
+
+## 6. Zona da quadra (editor do B6)
+
+A linha que decide dentro ou fora vem de uma zona marcada no editor do B6. Sem zona salva, vale a medida oficial de 18 × 9 m, e a decisão sai com `zones_version: null`.
+
+```
+aba Gestão (editor do B6) → POST /zonas → artefato ZONES em metros + ods.artifact.published
+                                                                 ↓
+back do A4 (regra de dentro ou fora) ← ods.s1.position ← S1
+```
+
+### Marcar a quadra
+
+1. O back precisa de uma calibração de `ods.i3.calibration` para a câmera. Ela chega pelo Kafka ou por arquivo, em `A4_CALIBRACAO_ARQUIVO`. O consumidor começa em `latest`: uma calibração publicada antes de o back subir só chega pelo arquivo.
+2. Na aba Gestão, em "Zona da quadra", escolha a câmera e envie uma foto de um quadro dela, na mesma proporção da calibração.
+3. Clique nos 4 cantos e feche com o botão direito. O editor do B6 só funciona com mouse.
+4. Clique em "Salvar zona". Cada salvamento cria uma versão nova. O editor do B6 não reabre zonas salvas, então para mudar é preciso desenhar de novo.
+
+### Rotas
+
+| método | rota | para quê |
+|---|---|---|
+| GET | `/zonas/{source_id}` | versão da calibração e zona atual da câmera |
+| POST | `/zonas` | `{ source_id, largura, altura, pontos: [{ x, y }] }`, com pontos de 0 a 1 |
+
+O `POST` responde 409 sem calibração e 422 quando o desenho não é um quadrilátero convexo ou a foto tem outra proporção.
+
+### Como a zona entra na decisão
+
+- `distancia_cm` é medida até a linha mais perto da zona.
+- `erro_cm` é o quanto os lados desenhados fogem de 18 × 9 m. Ele soma na `banda_cm`, então um desenho ruim transforma lances perto da linha em `duvida`. Acima de `A4_ZONA_TOLERANCIA_CM` (padrão 30), a tela avisa.
+- `lado` usa o centro da zona no eixo x, que corre ao longo dos 18 m no referencial do I3.
+- A regra lê a zona direto do artefato, sem usar `zone_ids`: o S1 não informa a distância até a linha nem o instante do quique.
+
+### Artefatos e S1
+
+As versões ficam em `back/artefatos/a4/zones/<versao>/`, com `content.json` e `descriptor.json`. A pasta muda com `A4_ARTEFATOS_DIR` e é a que o S1 precisa receber em `S1_REGISTRY_DIR`. O S1 acompanha o `artifact_id` `zones-a4-<camera>`, então configure `S1_ZONES_FILE` e `S1_ZONES_VERSION` com uma versão salva. Ele só aplica uma versão nova na próxima sessão.
+
+O A4 ainda não consta como produtor de `ZONES` na tabela de artefatos da 6c (A3, A5 e A8). Isso precisa ser combinado com a TRA-1 e a VER-6.

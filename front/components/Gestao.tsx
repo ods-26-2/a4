@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { criarPartida, encerrarPartida, type Partida } from "@/lib/api";
+import EditorZonas from "./EditorZonas";
 import s from "./Gestao.module.css";
 
 interface Props {
@@ -82,6 +83,8 @@ export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
           )}
         </section>
       )}
+
+      <EditorZonas sourceInicial={partida?.source_id ?? "cam0"} aviso={aviso} />
     </>
   );
 }

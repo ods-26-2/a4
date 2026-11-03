@@ -13,6 +13,7 @@ export interface Decisao {
   track_id: string;
   source_id: string;
   artifact_version: string; // versao da calibracao que decidiu
+  zones_version?: string | null; // versao da zona; null quando valeu a medida oficial
   origem: "automatica" | "corrigida";
   operador: string | null;
   veredito_automatico: Veredito | null;
@@ -75,6 +76,29 @@ export const enquadrar = (pan_deg: number, tilt_deg: number) =>
   post<{ status: string; command_id?: string; pan_deg: number; tilt_deg: number; topico?: string; aviso?: string }>(
     `/camera/enquadrar?pan_deg=${encodeURIComponent(pan_deg)}&tilt_deg=${encodeURIComponent(tilt_deg)}`,
   );
+
+// zona da quadra: o front manda o desenho (0 a 1) e o back devolve o artefato em metros
+export interface Zona {
+  artifact_version: string;
+  poligono_m: [number, number][];
+  erro_cm: number;
+  aviso?: string;
+  publicado?: boolean;
+}
+
+export interface EstadoZona {
+  calibracao: string | null; // versao da calibracao do i3; sem ela nao da para converter
+  zona: Zona | null;
+}
+
+export const lerZona = async (source_id: string): Promise<EstadoZona> => {
+  const r = await fetch(`${API}/zonas/${encodeURIComponent(source_id)}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`/zonas: ${r.status} ${await r.text()}`);
+  return r.json();
+};
+
+export const salvarZona = (corpo: { source_id: string; largura: number; altura: number; pontos: { x: number; y: number }[] }) =>
+  post<Zona>("/zonas", corpo);
 
 export const corrigir = (id: string, veredito: Veredito, operador: string) =>
   post<Decisao>(`/decisoes/${id}/correcao`, { veredito, operador });

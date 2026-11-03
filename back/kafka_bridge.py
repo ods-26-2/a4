@@ -1,7 +1,8 @@
 """Integração opcional do A4 com o barramento Kafka do ODS.
 
 Ative com A4_KAFKA_ENABLED=true. O frontend nunca acessa Kafka diretamente:
-este módulo publica comandos do P7 e consome estado do P7 e eventos consolidados da regra.
+este módulo publica comandos do P7 e artefatos, e consome estado do P7, eventos consolidados
+da regra, calibração do I3 e posição do S1.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import logging
 import os
 import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -18,18 +20,46 @@ log = logging.getLogger("a4.kafka")
 TOPICO_COMANDO_P7 = "ods.p7.move.command"
 TOPICO_ESTADO_P7 = "ods.p7.state"
 TOPICO_REGRA = os.getenv("A4_KAFKA_TOPIC_REGRA", "ods.regra.evento_consolidado")
+TOPICO_CALIBRACAO = "ods.i3.calibration"
+TOPICO_POSICAO = "ods.s1.position"
+CAMPOS_ENVELOPE = ("message_id", "message_type", "schema", "schema_version", "producer", "payload")
+VERSAO_SUPORTADA = "1."
+MAX_VISTOS = 5000
 
 
 def agora() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def motivo_invalido(envelope: Any, schema: str) -> str | None:
+    """Validação do guia do Kafka (4.3): devolve o motivo para descartar, ou None se está certo."""
+    if not isinstance(envelope, dict):
+        return "mensagem não é um objeto"
+    for campo in CAMPOS_ENVELOPE:
+        if campo not in envelope:
+            return f"campo obrigatório ausente: {campo}"
+    if envelope["schema"] != schema:
+        return f"schema inesperado: {envelope['schema']}"
+    if not str(envelope["schema_version"]).startswith(VERSAO_SUPORTADA):
+        return f"versão não suportada: {envelope['schema_version']}"
+    if not isinstance(envelope["payload"], dict):
+        return "payload não é um objeto"
+    return None
+
+
 class KafkaBridge:
     """Producer/consumer em thread dedicada; a aplicação continua utilizável sem Kafka."""
 
-    def __init__(self, ao_receber_decisao: Callable[[dict[str, Any]], None]):
+    def __init__(
+        self,
+        ao_receber_decisao: Callable[[dict[str, Any]], None],
+        ao_receber_calibracao: Callable[[dict[str, Any]], None] | None = None,
+        ao_receber_posicao: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self.bootstrap = os.getenv("A4_KAFKA_BOOTSTRAP_SERVERS", "34.66.235.91:9093")
         self._ao_receber_decisao = ao_receber_decisao
+        self._ao_receber = {TOPICO_CALIBRACAO: ao_receber_calibracao, TOPICO_POSICAO: ao_receber_posicao}
+        self._vistos: OrderedDict[str, None] = OrderedDict()
         self._producer = None
         self._consumer = None
         self._thread: threading.Thread | None = None
@@ -70,7 +100,7 @@ class KafkaBridge:
             "auto.offset.reset": "latest",
             "enable.auto.commit": True,
         })
-        self._consumer.subscribe([TOPICO_ESTADO_P7, TOPICO_REGRA])
+        self._consumer.subscribe([TOPICO_ESTADO_P7, TOPICO_REGRA, TOPICO_CALIBRACAO, TOPICO_POSICAO])
         self._enabled = True
         with self._lock:
             self._camera_state.update({
@@ -134,6 +164,34 @@ class KafkaBridge:
             "aviso": "Comando publicado; aguardando confirmação em ods.p7.state.",
         }
 
+    def publicar_evento(self, topico: str, chave: str, envelope: dict[str, Any]) -> None:
+        if not self._enabled or self._producer is None:
+            raise RuntimeError("Kafka não habilitado")
+        self._producer.produce(topico, key=chave.encode("utf-8"),
+                               value=json.dumps(envelope, ensure_ascii=False).encode("utf-8"))
+        remaining = self._producer.flush(5)
+        if remaining:
+            raise RuntimeError(f"Kafka não confirmou o envio (mensagens pendentes: {remaining})")
+
+    def _repetida(self, message_id: str) -> bool:
+        """A mesma mensagem pode chegar duas vezes (guia do Kafka, 4.4)."""
+        if message_id in self._vistos:
+            return True
+        self._vistos[message_id] = None
+        if len(self._vistos) > MAX_VISTOS:
+            self._vistos.popitem(last=False)
+        return False
+
+    def _tratar_contrato(self, topico: str, envelope: Any) -> None:
+        """Calibração e posição: descarta e registra o que estiver fora do contrato."""
+        motivo = motivo_invalido(envelope, topico)
+        if motivo:
+            log.warning("Mensagem descartada de %s: %s", topico, motivo)
+            return
+        destino = self._ao_receber[topico]
+        if destino and not self._repetida(envelope["message_id"]):
+            destino(envelope)
+
     def _consumir(self) -> None:
         assert self._consumer is not None
         while not self._stop.is_set():
@@ -152,6 +210,8 @@ class KafkaBridge:
                         decisao = self._normalizar_decisao(envelope)
                         if decisao:
                             self._ao_receber_decisao(decisao)
+                    elif msg.topic() in self._ao_receber:
+                        self._tratar_contrato(msg.topic(), envelope)
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
                     log.warning("Mensagem inválida em %s: %s", msg.topic(), exc)
                 except Exception:
