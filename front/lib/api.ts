@@ -10,6 +10,7 @@ export interface Decisao {
   distancia_cm: number; // positivo e fora
   banda_cm: number; // incerteza, 2 sigma
   lado: Lado; // onde a bola quicou
+  position_m: [number, number] | null; // ponto do quique na quadra, x 0-18 m e y 0-9 m; null no mock
   track_id: string;
   source_id: string;
   artifact_version: string; // versao da calibracao que decidiu

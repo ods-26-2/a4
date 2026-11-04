@@ -13,3 +13,18 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # sem a espera de 3 s no primeiro rebalanceamento: so tem um consumidor por grupo
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  # cria os topicos da cadeia antes de alguem assinar: consumidor de topico que nao existe
+  # so o enxerga no proximo refresh de metadados e, lendo do fim, perde o comeco do fluxo
+  topicos:
+    image: apache/kafka:3.9.0
+    network_mode: service:kafka                       # localhost:9092 e o broker
+    depends_on: [kafka]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        for t in ods.session.started ods.i1.detections ods.i2.tracks ods.i3.calibration ods.s1.position; do
+        until /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092
+        --create --if-not-exists --topic $$t; do sleep 1; done; done

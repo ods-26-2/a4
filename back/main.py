@@ -168,6 +168,8 @@ def receber_posicao_s1(envelope: dict[str, Any]):
             point_px = pos.get("point_px")
             if point_px is None or len(point_px) < 2:
                 continue
+            # ponytail: o S1 não repassa predicted nem bbox do I2 (6c), então ponto extrapolado
+            # na oclusão e caixa de tênis entram; sobra o filtro de velocidade do Detector
             decisao = detector.amostra(cal, track_id, t_s, tuple(point_px))
             if decisao is not None:
                 log.info("Quique detectado via S1: track=%s veredito=%s dist=%.1f cm",
@@ -175,6 +177,16 @@ def receber_posicao_s1(envelope: dict[str, Any]):
                 receber_decisao_automatica(decisao)
     except Exception:
         log.exception("Erro processando posição S1")
+
+
+def receber_sessao(envelope: dict[str, Any]):
+    """ods.session.started: track_id da sessão anterior não vale mais (6c, componente com estado).
+
+    ponytail: zera as trilhas de todas as câmeras; um Detector por source_id se entrar a segunda
+    """
+    if detector is not None:
+        detector.zerar()
+        log.info("Sessão nova %s: quiques em andamento descartados", envelope.get("session_id"))
 
 
 def lance_falso(p):
@@ -185,7 +197,8 @@ def lance_falso(p):
             "duvida": random.uniform(-banda, banda)}[v]
     adicionar_decisao(p, {
         "decisao_id": str(uuid.uuid4()), "veredito": v, "distancia_cm": round(dist, 1),
-        "banda_cm": banda, "lado": random.choice("AB"), "track_id": f"t-{random.randint(1, 999):04d}",
+        "banda_cm": banda, "lado": random.choice("AB"), "position_m": None,
+        "track_id": f"t-{random.randint(1, 999):04d}",
         "source_id": p["source_id"], "artifact_version": f"cal-{p['source_id']}-3",
         "origem": "automatica", "operador": None, "veredito_automatico": None,
         "anulada": False, "instante": agora()})
@@ -200,8 +213,9 @@ async def ciclo(_app):
         try:
             detector = Detector()
         except Exception:
-            log.exception("Detector de arbitragem não pôde ser inicializado (opencv disponível?)")
-        kafka = KafkaBridge(receber_decisao_automatica, receber_posicao_s1, receber_calibracao_i3)
+            log.exception("Detector de arbitragem não pôde ser inicializado")
+        kafka = KafkaBridge(receber_decisao_automatica, receber_posicao_s1, receber_calibracao_i3,
+                            receber_sessao)
         try:
             kafka.start()
         except Exception:

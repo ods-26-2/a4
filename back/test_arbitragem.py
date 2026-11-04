@@ -26,4 +26,12 @@ amostras = [Amostra(t, (12.0 + 10 * (t - 0.5), 4.0), abs(t - 0.5))
 tc, (x, y) = ponto_de_contato(amostras)
 assert abs(tc - 0.5) < 1e-3 and abs(x - 12.0) < 0.01 and abs(y - 4.0) < 0.01, (tc, x, y)
 
+# bola no alto da parabola (altura com maximo, nao minimo): nao e quique, e nao pode quebrar
+topo = [Amostra(t, (12.0, 4.0), -abs(t - 0.5)) for t in (i / 30 for i in range(6, 25))]
+assert ponto_de_contato(topo) is None
+
+# descida reta sem fundo: o vertice so existiria fora das amostras, a quilometros
+descida = [Amostra(t, (12.0, 4.0), 1.0 - t + 0.01 * t * t) for t in (i / 30 for i in range(7))]
+assert ponto_de_contato(descida) is None
+
 print("arbitragem ok")

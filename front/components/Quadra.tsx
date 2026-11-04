@@ -5,14 +5,14 @@ import s from "./Quadra.module.css";
 const M = 20, MARGEM = 2 * M, L = 18 * M, A = 9 * M;
 
 /**
- * Quadra vista de cima com o quique e o circulo da banda de erro.
- * A API ainda nao manda a posicao (x, y) do quique, so a distancia ate a linha; por isso o
- * ponto fica no centro do lado onde a bola quicou e afastado da linha lateral pela distancia
- * real. Quando o Decisao ganhar position_m, troque cx e cy pelas coordenadas verdadeiras.
+ * Quadra vista de cima com o quique e o circulo da banda de erro, na orientacao da camera:
+ * x de 0 a 18 m da esquerda para a direita, y = 0 (linha de fundo proxima) embaixo.
+ * Lance sem position_m (o mock) fica no centro do lado, afastado da linha pela distancia.
  */
 export default function Quadra({ d }: { d: Decisao }) {
-  const cx = MARGEM + (d.lado === "A" ? L / 4 : (3 * L) / 4);
-  const cy = MARGEM - (d.distancia_cm / 100) * M; // positivo (fora) fica acima da linha
+  const [x, y] = d.position_m ?? [d.lado === "A" ? 4.5 : 13.5, 9 + d.distancia_cm / 100];
+  const cx = MARGEM + x * M;
+  const cy = MARGEM + (9 - y) * M;
   const raio = Math.max((d.banda_cm / 100) * M, 4);
   const cor = `var(--${d.veredito})`;
 

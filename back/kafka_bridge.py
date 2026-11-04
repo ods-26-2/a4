@@ -23,6 +23,7 @@ TOPICO_ESTADO_P7 = "ods.p7.state"
 TOPICO_REGRA = os.getenv("A4_KAFKA_TOPIC_REGRA", "ods.regra.evento_consolidado")
 TOPICO_S1_POSITION = "ods.s1.position"
 TOPICO_I3_CALIBRATION = "ods.i3.calibration"
+TOPICO_SESSAO = "ods.session.started"
 
 
 def agora() -> str:
@@ -34,11 +35,13 @@ class KafkaBridge:
 
     def __init__(self, ao_receber_decisao: Callable[[dict[str, Any]], None],
                  ao_receber_posicao_s1: Callable[[dict[str, Any]], None] | None = None,
-                 ao_receber_calibracao: Callable[[dict[str, Any]], None] | None = None):
+                 ao_receber_calibracao: Callable[[dict[str, Any]], None] | None = None,
+                 ao_receber_sessao: Callable[[dict[str, Any]], None] | None = None):
         self.bootstrap = os.getenv("A4_KAFKA_BOOTSTRAP_SERVERS", "34.66.235.91:9093")
         self._ao_receber_decisao = ao_receber_decisao
         self._ao_receber_posicao_s1 = ao_receber_posicao_s1
         self._ao_receber_calibracao = ao_receber_calibracao
+        self._ao_receber_sessao = ao_receber_sessao
         self._producer = None
         self._consumer = None
         self._thread: threading.Thread | None = None
@@ -61,7 +64,7 @@ class KafkaBridge:
 
     def start(self) -> None:
         try:
-            from confluent_kafka import Consumer, Producer
+            from confluent_kafka import OFFSET_BEGINNING, Consumer, Producer
         except ImportError as exc:
             raise RuntimeError(
                 "Kafka habilitado, mas confluent-kafka não está instalado. "
@@ -84,7 +87,18 @@ class KafkaBridge:
             topicos.append(TOPICO_S1_POSITION)
         if self._ao_receber_calibracao is not None:
             topicos.append(TOPICO_I3_CALIBRATION)
-        self._consumer.subscribe(topicos)
+        if self._ao_receber_sessao is not None:
+            topicos.append(TOPICO_SESSAO)
+
+        def posicionar(consumer, particoes):
+            # calibração é artefato retido: lida do começo a cada partida, senão o A4 que sobe
+            # depois do I3 (ou reinicia com offset salvo) fica sem calibração e não arbitra
+            for p in particoes:
+                if p.topic == TOPICO_I3_CALIBRATION:
+                    p.offset = OFFSET_BEGINNING
+            consumer.assign(particoes)
+
+        self._consumer.subscribe(topicos, on_assign=posicionar)
         self._enabled = True
         with self._lock:
             self._camera_state.update({
@@ -170,6 +184,8 @@ class KafkaBridge:
                         self._ao_receber_posicao_s1(envelope)
                     elif msg.topic() == TOPICO_I3_CALIBRATION and self._ao_receber_calibracao:
                         self._ao_receber_calibracao(envelope)
+                    elif msg.topic() == TOPICO_SESSAO and self._ao_receber_sessao:
+                        self._ao_receber_sessao(envelope)
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
                     log.warning("Mensagem inválida em %s: %s", msg.topic(), exc)
                 except Exception:
