@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { VIDEO_P6, enquadrar, estadoCamera, type Decisao } from "@/lib/api";
+import { VIDEO_P6, enquadrar, estadoCamera, estadoP6, type Decisao, type SessaoP6 } from "@/lib/api";
 import s from "./ReplayCamera.module.css";
 
 const PASSO_GRAUS = 5;
@@ -14,15 +14,20 @@ const MARCAS = 600; // ~2 min de relogio do ao vivo, a 4-5 timeupdate por segund
  * de ods.p7.state.
  *
  * ponytail: o vídeo é o pseudo-P6 (uma gravação em laço servida pelo back) e o replay é um
- * salto nela: o instante do lance vira posição do vídeo pelo relógio guardado enquanto a tela
- * está aberta. Sai quando o replay for o clipe do S4 (ods.s4.clip).
+ * salto nela. Com o barramento, o player segue a sessão da câmera (ods.session.started) e o
+ * lance cai em instante - started_at; sem ele, pelo relógio guardado enquanto a tela está
+ * aberta. Sai quando o replay for o clipe do S4 (ods.s4.clip).
  */
 export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefined; aviso: (t: string) => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const relogio = useRef<[number, number][]>([]); // [Date.now(), currentTime] do ao vivo
   const aoVivo = useRef(true);
+  const sessao = useRef<SessaoP6 | null>(null);
   const fimReplay = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const [modo, setModo] = useState<"ao vivo" | "replay" | "sem vídeo">("ao vivo");
+  const [modo, setModo] = useState<"ao vivo" | "replay">("ao vivo");
+  const [gravacao, setGravacao] = useState<string | null>(null);
+  const [falhou, setFalhou] = useState<string | null>(null); // gravacao que o navegador nao abriu
+  const semVideo = !gravacao || falhou === gravacao;
   const [angulo, setAngulo] = useState({ pan: 0, tilt: 0 });
   const [status, setStatus] = useState("Consultando estado do P7…");
   const [p7Disponivel, setP7Disponivel] = useState(false);
@@ -33,6 +38,13 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function atualizarEstado() {
+      try {
+        const p6 = await estadoP6();
+        sessao.current = p6.sessao;
+        if (ativo && p6.video) setGravacao(p6.video);
+      } catch {
+        // back fora do ar: o estado do P7 abaixo avisa
+      }
       try {
         const estado = await estadoCamera();
         if (!ativo) return;
@@ -62,6 +74,12 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   function marcar() {
     const v = video.current;
     if (!v || !aoVivo.current) return;
+    const s = sessao.current;
+    if (s) {
+      // mesmo quadro que a camera esta mandando ao I1; corrige se escorregar mais de 1 s
+      const esperado = ((Date.now() - Date.parse(s.publicada_em)) / 1000) % v.duration;
+      if (Math.abs(v.currentTime - esperado) > 1) v.currentTime = esperado;
+    }
     relogio.current.push([Date.now(), v.currentTime]);
     if (relogio.current.length > MARCAS) relogio.current.shift();
   }
@@ -69,11 +87,13 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   function replay() {
     const v = video.current;
     if (!lance) return aviso("Ainda não há lance para rever");
-    if (!v || modo === "sem vídeo") return aviso("Pseudo-P6 sem vídeo");
+    if (!v || semVideo) return aviso("Pseudo-P6 sem vídeo");
     const alvo = Date.parse(lance.instante);
     const marca = relogio.current.findLast(([t]) => t <= alvo);
-    if (!marca) return aviso("Esse lance é de antes desta tela abrir o vídeo; não há gravação dele");
-    const instante = (marca[1] + (alvo - marca[0]) / 1000) % v.duration;
+    const s = sessao.current;
+    if (!s && !marca) return aviso("Esse lance é de antes desta tela abrir o vídeo; não há gravação dele");
+    const instante = s ? (alvo - Date.parse(s.started_at)) / 1000 : (marca![1] + (alvo - marca![0]) / 1000) % v.duration;
+    if (instante < 0 || instante > v.duration) return aviso("Esse lance não é da gravação que está tocando");
     const volta = { t: Date.now(), pos: v.currentTime };
     aoVivo.current = false;
     setModo("replay");
@@ -104,12 +124,12 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   return (
     <section className="painel" aria-label="Replay e câmera">
       <h2>Replay e câmera</h2>
-      {modo === "sem vídeo" ? (
-        <div className={s.video}>Pseudo-P6 sem vídeo. Confira A4_P6_VIDEO no back.</div>
+      {semVideo ? (
+        <div className={s.video}>{gravacao ? "Pseudo-P6 sem vídeo. Confira A4_P6_VIDEO no back." : "Carregando o vídeo…"}</div>
       ) : (
         <div className={s.tela}>
-          <video ref={video} src={VIDEO_P6} autoPlay muted loop playsInline onTimeUpdate={marcar}
-            onError={() => setModo("sem vídeo")} />
+          <video ref={video} src={`${VIDEO_P6}?gravacao=${encodeURIComponent(gravacao)}`} autoPlay muted loop playsInline onTimeUpdate={marcar}
+            onError={() => setFalhou(gravacao)} />
           <span className={`${s.selo} ${modo === "replay" ? s.replay : ""}`}>{modo}</span>
         </div>
       )}

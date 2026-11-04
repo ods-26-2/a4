@@ -106,13 +106,15 @@ class KafkaBridge:
 
         def posicionar(consumer, particoes):
             # calibração é artefato retido: lida do começo a cada partida, senão o A4 que sobe
-            # depois do I3 (ou reinicia com offset salvo) fica sem calibração e não arbitra
+            # depois do I3 (ou reinicia com offset salvo) fica sem calibração e não arbitra.
+            # a sessão também: a câmera só anuncia no começo da volta, e a última é a atual
             for p in particoes:
-                if p.topic == TOPICO_CALIBRACAO:
+                if p.topic in (TOPICO_CALIBRACAO, TOPICO_SESSAO):
                     p.offset = OFFSET_BEGINNING
             consumer.assign(particoes)
 
-        self._consumer.subscribe([TOPICO_ESTADO_P7, TOPICO_REGRA, *self._ao_receber], on_assign=posicionar)
+        topicos = [TOPICO_ESTADO_P7, TOPICO_REGRA, *self._ao_receber]
+        self._consumer.subscribe(topicos, on_assign=posicionar)
         self._enabled = True
         with self._lock:
             self._camera_state.update({

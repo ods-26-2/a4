@@ -278,4 +278,11 @@ cd front && npm run dev
 - **Replay do lance:** volta o vídeo para 3 s antes do lance, toca 5 s e volta ao ao vivo. O instante do lance vira posição do vídeo pelo relógio que a tela guarda enquanto está aberta, então lance de antes de abrir a tela não tem replay. Os lances do modo demo são sorteados; o replay mostra o que o vídeo exibia naquela hora.
 - **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração vem de `old/yolo/calibracao-cam0.json`, saída do I3 para esse clipe (`main.py --source-id cam0 < dados/pontos_quadra.csv`).
 
+### Com o barramento
+
+Com a cadeia ligada (`sim/README.md`: câmera simulada → I1 → I2 → S1 → back com `A4_KAFKA_ENABLED=true` e `A4_MODO_DEMO=false`), o `A4_P6_VIDEO` aponta para o mesmo vídeo que a câmera toca, e o player segue a sessão dela:
+
+- **Ao vivo:** o back guarda o último `ods.session.started` (lido do começo do tópico, como a calibração) e `GET /p6` devolve a sessão e qual vídeo serve. O player toca no mesmo ponto que a câmera e corrige se escorregar mais de 1 s; se o vídeo do back mudar, o player recarrega.
+- **Replay:** o lance cai em `instante - started_at` no vídeo, exato, mesmo para lance de antes de abrir a tela.
+
 Quando o P6 e o S4 entrarem, o player passa a tocar o stream do P6 e o replay vira o clipe de `ods.s4.clip`, pedido por `ods.s4.capture.command` (6c, A4).

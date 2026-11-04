@@ -65,7 +65,8 @@ assert lances(main.nova_partida(source_id="cam0"), [quadro(n, fonte="cam9") for 
 # sessao nova no meio do quique: os track_id antigos nao valem, o quique nao fecha
 p = main.nova_partida(source_id="cam0")
 lances(p, quique[:14])
-main.receber_sessao({"session_id": "s-2", "payload": {"sources": ["cam0"]}})
+main.receber_sessao({"session_id": "s-2", "published_at": iso(TC), "payload": {"sources": ["cam0"], "started_at": iso(T0)}})
+assert main.estado_p6()["sessao"]["started_at"] == iso(T0)
 assert lances(p, quique[14:]) == [], "ods.session.started tem que zerar o quique em andamento"
 
 print("rastros ok")

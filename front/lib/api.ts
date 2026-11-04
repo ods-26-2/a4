@@ -54,6 +54,25 @@ export const encerrarPartida = (id: string) => post<Partida>(`/partidas/${id}/en
 // pseudo-P6: a gravacao servida pelo back no lugar do P6 e dos clipes do S4
 export const VIDEO_P6 = `${API}/p6/video`;
 
+// com o barramento ligado, a sessao de replay da camera: o player toca no mesmo ponto
+export interface SessaoP6 {
+  session_id: string;
+  started_at: string; // origem do captured_at: lance em started_at + t esta em t no video
+  publicada_em: string; // quando a volta atual comecou no relogio
+}
+
+// video muda quando o back troca de gravacao: entra na url do player para ele recarregar
+export interface EstadoP6 {
+  video: string | null;
+  sessao: SessaoP6 | null;
+}
+
+export const estadoP6 = async (): Promise<EstadoP6> => {
+  const r = await fetch(`${API}/p6`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`/p6: ${r.status}`);
+  return r.json();
+};
+
 // no mock o clip_id vem null e "aviso" explica por que (o S4 ainda nao existe)
 export const pedirReplay = (id: string) =>
   post<{ clip_id: string | null; aviso?: string }>(`/decisoes/${id}/replay`);

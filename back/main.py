@@ -45,6 +45,8 @@ kafka: KafkaBridge | None = None
 registro = Registro()
 calibracoes: dict[str, Any] = {}                     # source_id -> Calibracao mais recente
 detectores: dict[str, tuple[str, Detector]] = {}     # source_id -> (session_id, Detector)
+# último ods.session.started: started_at amarra o captured_at dos lances à posição no vídeo
+sessao_p6: dict[str, Any] | None = None
 
 
 def agora():
@@ -175,6 +177,10 @@ def receber_sessao(envelope: dict[str, Any]):
     """ods.session.started (6c, componente com estado): quique em andamento da sessão anterior
     não fecha. A posição também troca o Detector pelo session_id; isto cobre o quique que fica
     parado no meio quando a sessão nova chega antes do primeiro quadro dela."""
+    global sessao_p6
+    # ponytail: uma câmera só no player; por source_id se o A4 mostrar duas
+    sessao_p6 = {"session_id": envelope["session_id"], "started_at": envelope["payload"]["started_at"],
+                 "publicada_em": envelope["published_at"]}
     for source_id in envelope["payload"].get("sources", []):
         if detectores.get(source_id, (None,))[0] != envelope["session_id"]:
             detectores.pop(source_id, None)
@@ -321,6 +327,14 @@ def video_p6():
     if not P6_VIDEO.is_file():
         raise HTTPException(404, f"Pseudo-P6 sem vídeo: {P6_VIDEO} não existe. Aponte A4_P6_VIDEO para um .mp4.")
     return FileResponse(P6_VIDEO, media_type="video/mp4")
+
+
+@app.get("/p6")
+def estado_p6():
+    """O que o player precisa: qual vídeo (muda o nome, o player recarrega) e a sessão de replay
+    em curso, a que alinha o player à câmera e faz o lance cair em instante - started_at."""
+    video = f"{P6_VIDEO.name}-{P6_VIDEO.stat().st_size}" if P6_VIDEO.is_file() else None
+    return {"video": video, "sessao": sessao_p6}
 
 
 @app.post("/decisoes/{did}/replay")
