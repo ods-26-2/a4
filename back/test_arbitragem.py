@@ -49,8 +49,9 @@ def rodar(*trajetos, cal=CAL, extra=()):
     for k, tr in enumerate(trajetos):
         for t, px in tr:
             por_t.setdefault(round(t * cena.FPS), []).append((f"t-ball-{k}", px))
-    # o s1 manda um quadro por quadro de camera, com bola ou sem: segue 1 s depois do fim
-    for n in range(min(por_t), max(por_t) + int(cena.FPS) + 1):
+    # o s1 manda um quadro por quadro de camera, com bola ou sem: segue 2 s depois do fim (o
+    # contato mal medido espera 1 s pela regra do jogo)
+    for n in range(min(por_t), max(por_t) + 2 * int(cena.FPS) + 1):
         d = det.quadro(cal, 1_793_000_000 + n / cena.FPS, por_t.get(n, []) + list(extra))
         if d:
             decisoes.append(d)
@@ -95,5 +96,11 @@ assert d["veredito"] == "dentro" and erro_cm < 50 and d["banda_cm"] > erro_cm, d
 primeiro = cena.quique((12.0, 4.5), (6.0, 1.0, -9.0), depois_s=0.45)
 segundo = [(t + 0.95, X) for t, X in cena.quique((14.7, 4.95), (6.0, 1.0, -6.3), antes_s=0.5)]
 assert len(rodar(cena.pixels(primeiro + segundo))) == 1
+
+# 8. manchete rente (0,4 m) em que o rastreio perde a bola no toque, e 0,5 s depois o
+# levantamento sai alto: a bola estava em jogo, nao e lance
+chegada = [(t, X) for t, X in cena.toque((5.0, 4.0, 0.4), (4.0, 0.5, -7.0), (0, 0, 0)) if t <= 1.0]
+levantamento = [(t + 0.5, X) for t, X in cena.toque((6.0, 4.5, 2.6), (0, 0, 0), (1.0, 0.3, 5.0), antes_s=0, depois_s=0.8)]
+assert rodar(cena.pixels(chegada + levantamento)) == []
 
 print("arbitragem ok")

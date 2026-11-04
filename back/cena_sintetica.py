@@ -39,29 +39,24 @@ def pixel(X):
     return p[:2] / p[2]
 
 
-def voo(X0, V0, t0, t1, t_ini=0.0):
-    """posicoes do pe da bola num voo, de t0 a t1 (s depois do inicio do voo, em t_ini)"""
-    saida = []
-    for n in range(int(np.ceil(t0 * FPS)), int(t1 * FPS) + 1):
-        dt = n / FPS - 0.0
-        X = np.array(X0) + np.array(V0) * (dt) + np.array([0, 0, -G * dt * dt / 2])
-        saida.append((t_ini + n / FPS, X))
-    return saida
+ARRASTO = 0.4          # c do arrasto linear (s^-1): bola de volei a ~12 m/s, o C0 do modelo
+
+
+def _voo(ponto, v, tau):
+    from trajetoria import voo
+    return voo(np.asarray(ponto, float), np.asarray(v, float), ARRASTO, tau)[0][0]
 
 
 def quique(chao, v_chegada, e=0.7, antes_s=0.6, depois_s=0.5, t_quique=1.0):
     """bola chegando ao chao em `chao` (x, y) no instante t_quique com velocidade v_chegada,
-    voltando com restituicao e no vertical; devolve [(t, X)] dos dois voos"""
+    voltando com restituicao e no vertical, com arrasto; devolve [(t, X)] dos dois voos"""
     vx, vy, vz = v_chegada
     pts = []
     for n in range(int((t_quique - antes_s) * FPS), int((t_quique + depois_s) * FPS) + 1):
         t = n / FPS
         dt = t - t_quique
-        if dt <= 0:   # antes: o voo que termina no chao em t_quique
-            X = np.array([chao[0] + vx * dt, chao[1] + vy * dt, vz * dt - G * dt * dt / 2])
-        else:         # depois: sobe com -e vz
-            X = np.array([chao[0] + vx * dt, chao[1] + vy * dt, -e * vz * dt - G * dt * dt / 2])
-        pts.append((t, X))
+        v = (vx, vy, vz) if dt <= 0 else (vx, vy, -e * vz)
+        pts.append((t, _voo((chao[0], chao[1], 0.0), v, dt)))
     return pts
 
 
@@ -71,8 +66,7 @@ def toque(ponto, v_chegada, v_saida, antes_s=0.6, depois_s=0.5, t_toque=1.0):
     for n in range(int((t_toque - antes_s) * FPS), int((t_toque + depois_s) * FPS) + 1):
         t = n / FPS
         dt = t - t_toque
-        v = np.array(v_chegada if dt <= 0 else v_saida)
-        pts.append((t, np.array(ponto) + v * dt + np.array([0, 0, -G * dt * dt / 2])))
+        pts.append((t, _voo(ponto, v_chegada if dt <= 0 else v_saida, dt)))
     return pts
 
 

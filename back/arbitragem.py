@@ -7,6 +7,7 @@ a decisao automatica e so proposta: o arbitro decide.
 o quique sai da trajetoria 3D (trajetoria.py): arcos balisticos e a altura de cada contato.
 so contato no chao, dentro da incerteza do ajuste, vira lance; toque de jogador fica no ar.
 """
+import copy
 import math
 import uuid
 from collections import namedtuple
@@ -22,9 +23,11 @@ CANTOS = ((0.0, 0.0), (18.0, 0.0), (18.0, 9.0), (0.0, 9.0))  # medida oficial, s
 
 # o que a fisica e a regra pedem, nao o video
 MIN_ARCO = 8           # quadros de um voo: 0,27 s a 30 fps, a gravidade ja curva o arco
-FOLGA = 4.0            # erro, em sigmas do ponto, para o ponto ainda ser do arco
+FOLGA = 4.0            # residuo, em sigmas do ponto, para o arco novo valer
+CHI2_2_99 = 9.21       # portao do ponto seguinte: previsao do arco + ruido, 99% em 2 graus
 VAO_S = 0.3            # buraco maximo entre o fim de um arco e o comeco do outro no mesmo toque
 SALTO_PX = 45          # quanto a bola anda entre dois quadros: 30 m/s a 18 m da camera
+LACUNA_S = 0.2         # falha de deteccao que o voo atravessa: o horizonte de predicao do I2
 JANELA_S = 1.0         # pontos soltos guardados para achar o proximo arco
 VEL_MAX = 40.0         # m/s; saque mais forte do volei fica perto de 35
 Z_JOGADOR = 0.6        # m; acima disso o contato e de jogador mesmo com 2 sigma de folga
@@ -33,6 +36,10 @@ Z_JOGADOR = 0.6        # m; acima disso o contato e de jogador mesmo com 2 sigma
 RESTITUICAO = (0.3, 1.0)
 HORIZONTAL = (0.4, 1.0)    # velocidade no plano depois / antes, mesma direcao
 BOLA_MORTA_S = 3.0     # bola no chao encerra o rally; o saque seguinte vem bem depois disso
+# arco que desce e some sem voo depois: a regra do jogo desempata. bola tocada por jogador segue
+# em jogo e volta a voar alto em menos de 1 s; bola no chao encerra o rally
+CONFIRMA_S = 1.0
+VZ_QUEDA = 3.0         # m/s: queda de verdade, nao bola rolando ou parada na mao
 GINASIO = ((-12.0, 30.0), (-12.0, 21.0), (-1.0, 25.0))  # x, y, z possiveis da bola, em m
 
 Calibracao = namedtuple("Calibracao", "source_id versao K dist H rms_cm space_id largura altura")
@@ -102,11 +109,13 @@ class Detector:
 
     def __init__(self):
         self._cam, self._versao = None, None
+        self._rng = np.random.default_rng(0)            # sorteio da incerteza, reproduzivel
         self.zerar()
 
     def zerar(self):
         """sessao nova: os arcos e pontos da anterior nao valem mais"""
         self.arco, self.anterior, self.soltos, self.morta_ate = None, None, [], -math.inf
+        self.pendente = None                             # (instante, decisao, arco) a confirmar
 
     def quadro(self, cal, t_s, pontos, zona=None):
         """pontos: [(track_id, point_px bruto)] da bola neste quadro, t_s em segundos epoch.
@@ -117,16 +126,23 @@ class Detector:
         cam = self._cam
         obs = [(t_s, *cam.pixel(px), tid) for tid, px in pontos]
         if self.arco is not None and obs:
-            erro, o = min((self.arco.erro_px(t_s, np.array(o[1:3])), o) for o in obs)
-            if erro <= FOLGA * SIGMA_PX:
+            erro, o = min((self.arco.distancia(t_s, np.array(o[1:3])), o) for o in obs)
+            if erro <= CHI2_2_99:                              # dentro da previsao do arco
                 self.arco = Arco(cam, self.arco.obs + [o], partida=self.arco)
                 obs.remove(o)
         self.soltos = [o for o in self.soltos + obs if t_s - o[0] <= JANELA_S]
-        if self.arco is not None and t_s - self.arco.fim > 2.5 / 30:
-            self.anterior, self.arco = self.arco, None          # sem ponto ha 3 quadros: acabou
+        if self.arco is not None and t_s - self.arco.fim > LACUNA_S:
+            self.anterior, self.arco = self.arco, None          # sem ponto alem da lacuna: acabou
         decisao = None
         if self.arco is None:
             novo = self._novo_arco(cam)
+            if novo is not None and self.pendente is not None and novo.inicio - self.pendente[2].fim <= VAO_S:
+                # voo logo depois do contato em espera: rebote do chao ou toque de jogador? o
+                # teste de quique dos dois arcos decide; quique fechado vira lance na hora
+                guardado, self.pendente = self.pendente, None
+                decisao = self._decidir(cal, zona, *contato(guardado[2], novo), guardado[2], novo)
+                if decisao is None:
+                    self.pendente = guardado                 # inconclusivo: segue a regra do jogo
             if novo is not None:
                 if self.anterior is not None and novo.inicio - self.anterior.fim <= VAO_S:
                     decisao = self._decidir(cal, zona, *contato(self.anterior, novo),
@@ -136,6 +152,16 @@ class Detector:
         if self.anterior is not None and t_s - self.anterior.fim > VAO_S:
             decisao = decisao or self._chegou_ao_chao(cal, zona, self.anterior)
             self.anterior = None
+        a = self.arco
+        if self.pendente is not None and a is not None and a.inicio > self.pendente[2].fim:
+            # voo novo subindo com certeza depois do contato: alguem tocou a bola. a altura de um
+            # voo jovem e mal medida, a velocidade vertical menos (o erro vai na profundidade);
+            # conferido a cada quadro, porque a incerteza cai enquanto o voo cresce
+            if a.theta[5] - 2 * math.sqrt(max(a.cov[5, 5], 0.0)) > 1.0:
+                self.pendente = None                         # a bola estava em jogo
+        if self.pendente is not None and t_s - self.pendente[0] > CONFIRMA_S and decisao is None:
+            t_c, decisao, _ = self.pendente                   # a bola nao voltou ao jogo: foi o chao
+            self.pendente, self.morta_ate = None, t_c + BOLA_MORTA_S
         return decisao
 
     def _novo_arco(self, cam):
@@ -144,7 +170,9 @@ class Detector:
         for o in sorted(self.soltos):
             for c in cadeias:
                 u = c[-1]
-                if 0 < o[0] - u[0] <= 2.5 / 30 and math.hypot(o[1] - u[1], o[2] - u[2]) <= SALTO_PX:
+                dt = o[0] - u[0]
+                # o voo atravessa falha curta de deteccao: liga se cabe na velocidade da bola
+                if 0 < dt <= LACUNA_S and math.hypot(o[1] - u[1], o[2] - u[2]) <= SALTO_PX * 30 * dt + 2:
                     c.append(o)
                     break
             else:
@@ -188,28 +216,57 @@ class Detector:
     def _chegou_ao_chao(self, cal, zona, a):
         """arco que desce e some sem outro depois: chao se o fim dele ja esta em z = 0"""
         t_g = chegada_ao_chao(a)
-        if t_g is None or not (a.fim - 0.05 <= t_g <= a.fim + VAO_S):
+        if t_g is None or not (a.fim - 0.05 <= t_g <= a.fim + VAO_S) or a.vz(t_g) > -VZ_QUEDA:
             return None
-        return self._lance(cal, zona, t_g, a.em(t_g), a.cov_em(a.fim),
-                           math.sqrt(max(a.cov_em(a.fim)[2, 2], 0.0)), altura=a.em(a.fim)[2])
+        # no contato a bola esta no chao: o pixel que o arco preve nesse instante fixa o ponto
+        # (raio do pixel com z = 0, como a homografia da 6c); a profundidade do arco, o eixo
+        # fraco de uma camera so, nao entra. a incerteza no chao vem da do pixel
+        cam = self._cam
 
-    def _lance(self, cal, zona, t_c, X, cov, sigma_z, altura=None):
+        def no_chao(theta):
+            arco = copy.copy(a)
+            arco.theta = theta
+            t = chegada_ao_chao(arco)
+            return None if t is None else cam.raio_na_altura(cam.projetar(arco.em(t)), 0.0)
+
+        X = no_chao(a.theta)
+        # o instante de chegada tambem e incerto, e a bola anda rapido: a incerteza no chao sai
+        # dos parametros do arco sorteados pela covariancia do ajuste
+        sorteios = [no_chao(th) for th in self._rng.multivariate_normal(a.theta, a.cov, 64)]
+        pontos = np.array([x for x in sorteios if x is not None])
+        cov = np.zeros((3, 3))
+        cov[:2, :2] = np.cov(pontos[:, :2].T) + SIGMA_PX ** 2 * np.eye(2) * 1e-4
+        sigma_z = math.sqrt(max(a.cov_em(a.fim)[2, 2], 0.0))
+        cov[2, 2] = sigma_z ** 2
+        return self._lance(cal, zona, t_g, X, cov, sigma_z, altura=a.em(a.fim)[2], pode_esperar=True)
+
+    def _lance(self, cal, zona, t_c, X, cov, sigma_z, altura=None, pode_esperar=False):
         altura = X[2] if altura is None else altura
-        # o chao (z = 0) tem que caber na incerteza da altura, dos dois lados, o contato nao pode
-        # estar na altura de jogador e tem que ser um lugar do ginasio
+        # a medida tem que separar chao de jogador (1 sigma da altura abaixo da altura de toque),
+        # senao "o chao cabe na incerteza" vale para qualquer coisa; o chao (z = 0) tem que caber
+        # nela, dos dois lados; o contato nao pode estar na altura de jogador nem fora do ginasio
+        informativa = sigma_z < Z_JOGADOR
         if not (abs(altura) < 2 * sigma_z + 0.1 and altura < Z_JOGADOR):
+            return None
+        if not informativa and not (pode_esperar and sigma_z < 2 * Z_JOGADOR):
             return None
         if not all(lo <= v <= hi for v, (lo, hi) in zip(X[:2], GINASIO[:2])):
             return None
-        if t_c < self.morta_ate:
+        if t_c < self.morta_ate or self.pendente is not None:
             return None                                          # quique seguinte do mesmo rally
-        self.morta_ate = t_c + BOLA_MORTA_S
         sigma_xy_cm = 100 * math.sqrt(max(np.linalg.eigvalsh(cov[:2, :2]).max(), 0.0))
         sigma = banda_de_duvida_cm(cal.rms_cm, sigma_xy_cm, zona.erro_cm if zona else 0.0)
         tid = (self.arco or self.anterior).obs[-1][3] if (self.arco or self.anterior) else None
         instante = datetime.fromtimestamp(t_c, timezone.utc).isoformat(timespec="milliseconds")
-        return arbitrar((float(X[0]), float(X[1])), sigma, cal.source_id, cal.versao, tid,
+        d = arbitrar((float(X[0]), float(X[1])), sigma, cal.source_id, cal.versao, tid,
                         instante.replace("+00:00", "Z"), zona) | {"altura_contato_m": round(float(altura), 2)}
+        if pode_esperar:
+            # arco unico: sem o voo depois do toque nao ha teste de quique, a regra do jogo
+            # desempata (a altura sozinha nao separa o chao de uma manchete rente)
+            self.pendente = (t_c, d, self.anterior)
+            return None
+        self.morta_ate = t_c + BOLA_MORTA_S
+        return d
 
 
 def _parece_parabola(cadeia, descartes=3):
@@ -224,7 +281,7 @@ def _parece_parabola(cadeia, descartes=3):
 
 def _plausivel(arco):
     """o arco precisa ser um voo possivel dentro do ginasio"""
-    if np.linalg.norm(arco.theta[3:]) > VEL_MAX:
+    if np.linalg.norm(arco.theta[3:6]) > VEL_MAX:
         return False
     for t in (arco.inicio, arco.fim):
         X = arco.em(t)

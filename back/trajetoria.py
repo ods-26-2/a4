@@ -79,8 +79,57 @@ def _homografia(origem, destino):
     return Vt[-1].reshape(3, 3)
 
 
+# arrasto do ar: a 20 m/s o arrasto de uma bola de volei (270 g, 21 cm) passa do peso, e um saque
+# ou um ataque nao e parabola. modelo de arrasto linear, dV/dt = -g z - c V, com c = k |v| por voo
+# (k ~ 0,03/m): tem solucao fechada. c fica em [0, C_MAX] e tem referencia fraca em C0 (12 m/s),
+# para o voo curto nao inventar arrasto
+C0, SIGMA_C, C_MAX = 0.4, 0.4, 3.0
+
+
+def _expoentes(c, tau):
+    """E1 = (1 - e^-c tau)/c, E2 = (tau - E1)/c e as derivadas em c; serie quando c tau ~ 0"""
+    ct = c * tau
+    if np.all(np.abs(ct) < 1e-3):
+        E1 = tau - c * tau ** 2 / 2 + c ** 2 * tau ** 3 / 6
+        E2 = tau ** 2 / 2 - c * tau ** 3 / 6 + c ** 2 * tau ** 4 / 24
+        dE1 = -tau ** 2 / 2 + c * tau ** 3 / 3
+        dE2 = -tau ** 3 / 6 + c * tau ** 4 / 12
+        return E1, E2, dE1, dE2
+    ex = np.exp(-ct)
+    E1 = (1 - ex) / c
+    E2 = (tau - E1) / c
+    dE1 = (tau * ex - E1) / c
+    dE2 = -(dE1 + E2) / c
+    return E1, E2, dE1, dE2
+
+
+def voo(X0, V0, c, tau):
+    """posicoes (n x 3) e velocidades no voo que passa por X0 com V0 em tau = 0 (vale para tras)"""
+    tau = np.atleast_1d(np.asarray(tau, float))
+    E1, E2, _, _ = _expoentes(c, tau)
+    z = np.array([0, 0, 1.0])
+    X = X0 + np.outer(E1, V0) - np.outer(G * E2, z)
+    V = np.outer(np.exp(-c * tau), V0) - np.outer(G * E1, z)
+    return X, V
+
+
+def _voo_jacobiano(X0, V0, c, tau):
+    """posicoes e dX/d(X0, V0, c): n x 3 x 7"""
+    E1, E2, dE1, dE2 = _expoentes(c, tau)
+    z = np.array([0, 0, 1.0])
+    X = X0 + np.outer(E1, V0) - np.outer(G * E2, z)
+    J = np.zeros((len(tau), 3, 7))
+    J[:, :, 0:3] = np.eye(3)
+    J[:, :, 3:6] = E1[:, None, None] * np.eye(3)
+    J[:, :, 6] = np.outer(dE1, V0) - np.outer(G * dE2, z)
+    return X, J
+
+
 class Arco:
-    """um voo da bola entre dois toques, ajustado aos pixels sem distorcao (t, u, v, ...)"""
+    """um voo da bola entre dois toques, ajustado aos pixels sem distorcao (t, u, v, ...)
+
+    theta = (X0, V0, c): posicao e velocidade em t0 e o arrasto do voo
+    """
 
     def __init__(self, cam, obs, partida=None):
         """partida: o arco anterior, quando este e ele com um ponto a mais (comeca de la)"""
@@ -92,9 +141,10 @@ class Arco:
             a = cam.raio_na_altura(self.obs[0][1:3], 1.5)      # chute: bola a 1,5 m de altura
             b = cam.raio_na_altura(self.obs[-1][1:3], 1.5)
             T = max(self.obs[-1][0] - self.t0, 1e-3)
-            theta, voltas = np.concatenate([a, (b - a) / T + np.array([0, 0, G * T / 2])]), 20
+            theta = np.concatenate([a, (b - a) / T + np.array([0, 0, G * T / 2]), [C0]])
+            voltas = 20
         self.theta, self.cov = _gauss_newton(cam, self.obs, self.t0, theta, voltas)
-        self.res = np.hypot(*_residuos(cam, self.obs, self.t0, self.theta).reshape(-1, 2).T)
+        self.res = np.hypot(*_residuos(cam, self.obs, self.t0, self.theta)[:-1].reshape(-1, 2).T)
 
     @property
     def inicio(self):
@@ -105,18 +155,30 @@ class Arco:
         return self.obs[-1][0]
 
     def em(self, t):
-        dt = t - self.t0
-        return self.theta[:3] + self.theta[3:] * dt + np.array([0, 0, -G * dt * dt / 2])
+        return voo(self.theta[:3], self.theta[3:6], self.theta[6], t - self.t0)[0][0]
 
     def vz(self, t):
-        return self.theta[5] - G * (t - self.t0)
+        return voo(self.theta[:3], self.theta[3:6], self.theta[6], t - self.t0)[1][0][2]
+
+    def velocidade(self, t):
+        return voo(self.theta[:3], self.theta[3:6], self.theta[6], t - self.t0)[1][0]
 
     def cov_em(self, t):
-        A = np.hstack([np.eye(3), np.eye(3) * (t - self.t0)])
-        return A @ self.cov @ A.T
+        _, J = _voo_jacobiano(self.theta[:3], self.theta[3:6], self.theta[6], np.array([t - self.t0]))
+        return J[0] @ self.cov @ J[0].T
 
     def erro_px(self, t, px):
         return float(np.hypot(*(self.cam.projetar(self.em(t)) - px)))
+
+    def distancia(self, t, px):
+        """distancia de mahalanobis do ponto ao pixel previsto: a incerteza do arco (pela
+        covariancia do ajuste) mais o ruido do ponto; arco jovem preve com mais folga"""
+        X, J = _voo_jacobiano(self.theta[:3], self.theta[3:6], self.theta[6], np.array([t - self.t0]))
+        uv, d = _projecao(self.cam.P, X)
+        Jp = d[0] @ J[0]
+        S = Jp @ self.cov @ Jp.T + SIGMA_PX ** 2 * np.eye(2)
+        r = uv[0] - px
+        return float(r @ np.linalg.solve(S, r))
 
 
 def _projecao(P, X):
@@ -128,27 +190,32 @@ def _projecao(P, X):
 
 
 def _residuos(cam, obs, t0, theta, com_jacobiano=False):
-    """erro em pixels de cada ponto e, se pedido, o jacobiano analitico (2n x 6)"""
+    """erro em pixels de cada ponto (mais a referencia do arrasto) e, se pedido, o jacobiano"""
     obs = np.asarray([o[:3] for o in obs], float)
-    dts = obs[:, 0] - t0
-    X = theta[:3] + np.outer(dts, theta[3:]) + np.outer(-G * dts ** 2 / 2, [0, 0, 1])
+    X, Jv = _voo_jacobiano(theta[:3], theta[3:6], theta[6], obs[:, 0] - t0)
     uv, d = _projecao(cam.P, X)
-    r = (uv - obs[:, 1:3]).ravel()
+    # referencia do arrasto como uma observacao a mais, na escala do ruido do ponto
+    r = np.append((uv - obs[:, 1:3]).ravel(), (theta[6] - C0) / SIGMA_C * SIGMA_PX)
     if not com_jacobiano:
         return r
-    return r, np.concatenate([d, d * dts[:, None, None]], axis=2).reshape(-1, 6)
+    J = np.einsum("nij,njk->nik", d, Jv).reshape(-1, 7)
+    linha_c = np.zeros((1, 7))
+    linha_c[0, 6] = SIGMA_PX / SIGMA_C
+    return r, np.vstack([J, linha_c])
 
 
 def _gauss_newton(cam, obs, t0, theta, voltas=20):
-    """minimiza o erro em pixels (levenberg-marquardt); devolve theta e a covariancia"""
+    """minimiza o erro em pixels (levenberg-marquardt), arrasto em [0, C_MAX]; theta e covariancia"""
     mu = 1e-3
     r, J = _residuos(cam, obs, t0, theta, True)
     for _ in range(voltas):
         JtJ = J.T @ J
-        passo = np.linalg.solve(JtJ + mu * np.diag(np.diag(JtJ)), -J.T @ r)
-        r_novo, J_novo = _residuos(cam, obs, t0, theta + passo, True)
+        passo = np.linalg.lstsq(JtJ + mu * np.diag(np.diag(JtJ)) + 1e-12 * np.eye(7), -J.T @ r, rcond=None)[0]
+        novo = theta + passo
+        novo[6] = np.clip(novo[6], 0.0, C_MAX)
+        r_novo, J_novo = _residuos(cam, obs, t0, novo, True)
         if r_novo @ r_novo < r @ r:
-            theta, r, J, mu = theta + passo, r_novo, J_novo, mu / 3
+            theta, r, J, mu = novo, r_novo, J_novo, mu / 3
             if np.abs(passo).max() < 1e-6:
                 break
         else:
@@ -166,69 +233,78 @@ def contato(a, b):
 
 def chegada_ao_chao(a):
     """instante em que o arco a, descendo, chega a z = 0 (depois do inicio), ou None"""
-    z0, vz0 = a.theta[2], a.theta[5]
-    disc = vz0 * vz0 + 2 * G * z0
-    if disc < 0:
+    taus = np.linspace(0.0, 3.0, 301)
+    z = voo(a.theta[:3], a.theta[3:6], a.theta[6], taus)[0][:, 2]
+    cruza = np.where((z[:-1] > 0) & (z[1:] <= 0))[0]
+    if len(cruza) == 0:
         return None
-    dt = (vz0 + math.sqrt(disc)) / G
-    return a.t0 + dt if dt > 0 else None
+    lo, hi = taus[cruza[0]], taus[cruza[0] + 1]
+    for _ in range(30):                                   # bissecao no intervalo da troca de sinal
+        meio = (lo + hi) / 2
+        if voo(a.theta[:3], a.theta[3:6], a.theta[6], meio)[0][0, 2] > 0:
+            lo = meio
+        else:
+            hi = meio
+    return a.t0 + (lo + hi) / 2
 
 
 def contato_conjunto(cam, a, b, no_chao=False):
     """os dois voos ajustados juntos, passando pelo mesmo ponto de contato no mesmo instante
 
-    incognitas: ponto (x, y, z), instante, velocidade de chegada e de saida (10). o ponto comum
-    amarra a profundidade dos dois arcos, e a altura dele sai com a incerteza do ajuste.
-    no_chao prende z = 0: depois de decidido que foi o chao, o ponto do quique sai preciso
-    devolve (t_c, X, cov 10x10 na ordem ponto, instante, v antes, v depois, v antes, v depois)
+    incognitas: ponto (x, y, z), instante, velocidade de chegada e de saida e o arrasto de cada
+    voo (12). o ponto comum amarra a profundidade dos dois arcos, e a altura dele sai com a
+    incerteza do ajuste. no_chao prende z = 0: depois de decidido que foi o chao, o ponto do
+    quique sai preciso. devolve (t_c, X, cov 12x12 na ordem ponto, instante, v antes, v depois,
+    arrasto antes e depois, v antes, v depois)
     """
     t_c, X, _, _ = contato(a, b)
-    theta = np.concatenate([X, [t_c], a.theta[3:] + np.array([0, 0, -G * (t_c - a.t0)]),
-                            b.theta[3:] + np.array([0, 0, -G * (t_c - b.t0)])])
-    lados = [(o, 0) for o in a.obs] + [(o, 1) for o in b.obs]
-    livres = [i for i in range(10) if not (no_chao and i == 2)]
+    theta = np.concatenate([X, [t_c], a.velocidade(t_c), b.velocidade(t_c), [a.theta[6], b.theta[6]]])
     if no_chao:
         theta[2] = 0.0
-
-    obs = np.array([o[:3] for o, _ in lados], float)
-    depois = np.array([lado for _, lado in lados], bool)
+    livres = [i for i in range(12) if not (no_chao and i == 2)]
+    obs = np.array([o[:3] for o in a.obs] + [o[:3] for o in b.obs], float)
+    depois = np.array([False] * len(a.obs) + [True] * len(b.obs))
+    z = np.array([0, 0, 1.0])
 
     def residuos(th, com_jacobiano=False):
-        dt = obs[:, 0] - th[3]
-        v = np.where(depois[:, None], th[7:10], th[4:7])
-        X = th[:3] + v * dt[:, None] + np.outer(-G * dt * dt / 2, [0, 0, 1])
+        X = np.zeros((len(obs), 3))
+        J = np.zeros((len(obs), 3, 12))
+        for lado, iv, ic in ((~depois, slice(4, 7), 10), (depois, slice(7, 10), 11)):
+            tau = obs[lado, 0] - th[3]
+            E1, E2, dE1, dE2 = _expoentes(th[ic], tau)
+            v = th[iv]
+            X[lado] = th[:3] + np.outer(E1, v) - np.outer(G * E2, z)
+            J[lado, :, 0:3] = np.eye(3)
+            J[lado, :, 3] = -(np.outer(np.exp(-th[ic] * tau), v) - np.outer(G * E1, z))
+            J[lado, :, iv] = E1[:, None, None] * np.eye(3)
+            J[lado, :, ic] = np.outer(dE1, v) - np.outer(G * dE2, z)
         uv, d = _projecao(cam.P, X)
-        r = (uv - obs[:, 1:3]).ravel()
+        ref = (th[10:12] - C0) / SIGMA_C * SIGMA_PX       # referencia fraca do arrasto
+        r = np.concatenate([(uv - obs[:, 1:3]).ravel(), ref])
         if not com_jacobiano:
             return r
-        # dX/d(ponto) = I; dX/d(instante) = -v + g dt z; dX/d(v do lado) = dt I
-        dX_dt = -v + np.outer(G * dt, [0, 0, 1])
-        J = np.zeros((len(obs), 2, 10))
-        J[:, :, 0:3] = d
-        J[:, :, 3] = np.einsum("nij,nj->ni", d, dX_dt)
-        lado_v = d * dt[:, None, None]
-        J[~depois, :, 4:7] = lado_v[~depois]
-        J[depois, :, 7:10] = lado_v[depois]
-        return r, J.reshape(-1, 10)[:, livres]
+        Jp = np.einsum("nij,njk->nik", d, J).reshape(-1, 12)
+        linhas = np.zeros((2, 12))
+        linhas[0, 10] = linhas[1, 11] = SIGMA_PX / SIGMA_C
+        return r, np.vstack([Jp, linhas])[:, livres]
 
-    def jacobiano(th, r):
-        return residuos(th, True)[1]
-
-    mu, r = 1e-3, residuos(theta)
+    mu = 1e-3
+    r, J = residuos(theta, True)
     for _ in range(30):
-        J = jacobiano(theta, r)
         JtJ = J.T @ J
-        passo = np.zeros(10)
-        passo[livres] = np.linalg.solve(JtJ + mu * np.diag(np.diag(JtJ)), -J.T @ r)
-        r_novo = residuos(theta + passo)
+        passo = np.zeros(12)
+        passo[livres] = np.linalg.lstsq(JtJ + mu * np.diag(np.diag(JtJ)) + 1e-12 * np.eye(len(livres)),
+                                        -J.T @ r, rcond=None)[0]
+        novo = theta + passo
+        novo[10:12] = np.clip(novo[10:12], 0.0, C_MAX)
+        r_novo, J_novo = residuos(novo, True)
         if r_novo @ r_novo < r @ r:
-            theta, r, mu = theta + passo, r_novo, mu / 3
+            theta, r, J, mu = novo, r_novo, J_novo, mu / 3
             if np.abs(passo).max() < 1e-7:
                 break
         else:
             mu *= 5
-    cov = np.zeros((10, 10))
-    J = jacobiano(theta, r)
+    cov = np.zeros((12, 12))
     cov[np.ix_(livres, livres)] = SIGMA_PX ** 2 * np.linalg.pinv(J.T @ J)
     return float(theta[3]), theta[:3], cov, theta[4:7], theta[7:10]
 
@@ -246,5 +322,5 @@ def quique_possivel(cov, v_antes, v_depois, restituicao, horizontal):
             M = np.diag([k, k, -e])
             r = v_depois - M @ v_antes
             C = S_dd + M @ S_aa @ M.T - M @ S_ad - S_ad.T @ M.T
-            melhor = min(melhor, float(r @ np.linalg.solve(C, r)))
+            melhor = min(melhor, float(r @ np.linalg.lstsq(C, r, rcond=None)[0]))
     return melhor <= CHI2_3_95, melhor
