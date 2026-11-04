@@ -22,8 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from arbitragem import Detector, calibracao
 from kafka_bridge import KafkaBridge
-from arbitragem import Detector, calibracao as parse_calibracao_a4
+from zonas import (TOLERANCIA_CM, TOPICO_PUBLICADO, Registro, ZonaInvalida, erro_quadra_cm,
+                   mensagem_publicada, pontos_para_metros, validar_quadra)
 
 logging.basicConfig(level=os.getenv("A4_LOG_LEVEL", "INFO"))
 log = logging.getLogger("a4")
@@ -32,11 +34,13 @@ INTERVALO_S = float(os.getenv("A4_INTERVALO_S", "6"))
 MODO_DEMO = os.getenv("A4_MODO_DEMO", "true").lower() in {"1", "true", "yes", "sim"}
 KAFKA_HABILITADO = os.getenv("A4_KAFKA_ENABLED", "false").lower() in {"1", "true", "yes", "sim"}
 VEREDITOS = ("dentro", "fora", "duvida")
+CALIBRACAO_ARQUIVO = os.getenv("A4_CALIBRACAO_ARQUIVO")
 
 partidas: dict[str, dict[str, Any]] = {}
 kafka: KafkaBridge | None = None
-detector: Detector | None = None
-calibracoes: dict[str, Any] = {}   # source_id -> Calibracao do arbitragem.py
+registro = Registro()
+calibracoes: dict[str, Any] = {}                     # source_id -> Calibracao mais recente
+detectores: dict[str, tuple[str, Detector]] = {}     # source_id -> (session_id, Detector)
 
 
 def agora():
@@ -131,62 +135,45 @@ def receber_decisao_automatica(decisao: dict[str, Any]):
         log.info("Decisão automática %s adicionada à partida %s", decisao.get("decisao_id"), p["id"])
 
 
-def receber_calibracao_i3(envelope: dict[str, Any]):
-    """Recebe ods.i3.calibration e guarda a calibração para o Detector."""
-    try:
-        cal = parse_calibracao_a4(envelope)
-        calibracoes[cal.source_id] = cal
-        log.info("Calibração I3 recebida: source_id=%s versão=%s rms=%.1f cm",
-                 cal.source_id, cal.versao, cal.rms_cm)
-    except Exception:
-        log.exception("Erro processando calibração I3")
+def receber_calibracao(envelope: dict[str, Any]):
+    """Recebe ods.i3.calibration; a mais nova substitui a anterior da mesma câmera."""
+    cal = calibracao(envelope)
+    calibracoes[cal.source_id] = cal
+    log.info("Calibração %s recebida para %s", cal.versao, cal.source_id)
 
 
-def receber_posicao_s1(envelope: dict[str, Any]):
-    """Recebe ods.s1.position e alimenta o Detector com posições da bola.
-
-    Para cada trilha com class='ball', envia a amostra ao Detector.
-    Se o Detector reconhece um quique, injeta a decisão no Score Manager.
-    """
-    if detector is None:
+def receber_posicao(envelope: dict[str, Any]):
+    """Recebe ods.s1.position e passa a bola pela regra, usando a zona salva da câmera."""
+    source_id = envelope["source_id"]
+    # o barramento é compartilhado: só interessa a câmera de uma partida aberta aqui
+    if not any(not p["encerrada"] and p["source_id"] == source_id for p in partidas.values()):
         return
-    try:
-        source_id = envelope.get("source_id", "cam0")
-        cal = calibracoes.get(source_id)
-        if cal is None:
-            return  # sem calibração, não dá para arbitrar
-        captured_at = envelope.get("captured_at", "")
-        try:
-            t_s = datetime.fromisoformat(captured_at.replace("Z", "+00:00")).timestamp()
-        except (ValueError, AttributeError):
-            return
-        payload = envelope.get("payload", {})
-        for pos in payload.get("positions", []):
-            if pos.get("class") != "ball":
-                continue
-            track_id = pos.get("track_id", "desconhecido")
-            point_px = pos.get("point_px")
-            if point_px is None or len(point_px) < 2:
-                continue
-            # ponytail: o S1 não repassa predicted nem bbox do I2 (6c), então ponto extrapolado
-            # na oclusão e caixa de tênis entram; sobra o filtro de velocidade do Detector
-            decisao = detector.amostra(cal, track_id, t_s, tuple(point_px))
-            if decisao is not None:
-                log.info("Quique detectado via S1: track=%s veredito=%s dist=%.1f cm",
-                         track_id, decisao["veredito"], decisao["distancia_cm"])
-                receber_decisao_automatica(decisao)
-    except Exception:
-        log.exception("Erro processando posição S1")
+    cal = calibracoes.get(source_id)
+    if cal is None:
+        log.debug("Posição ignorada: sem calibração para source_id=%s", source_id)
+        return
+    sessao = envelope["session_id"]
+    if detectores.get(source_id, (None,))[0] != sessao:
+        detectores[source_id] = (sessao, Detector())  # sessão nova: os track_id antigos não valem
+    detector = detectores[source_id][1]
+    t_s = datetime.fromisoformat(envelope["captured_at"].replace("Z", "+00:00")).timestamp()
+    for posicao in envelope["payload"]["positions"]:
+        if posicao["class"] != "ball":
+            continue
+        # ponytail: o S1 não repassa predicted nem bbox do I2 (6c), então ponto extrapolado
+        # na oclusão e caixa de tênis entram; sobra o filtro de velocidade do Detector
+        decisao = detector.amostra(cal, posicao["track_id"], t_s, posicao["point_px"], registro.atual(source_id))
+        if decisao:
+            receber_decisao_automatica(decisao)
 
 
 def receber_sessao(envelope: dict[str, Any]):
-    """ods.session.started: track_id da sessão anterior não vale mais (6c, componente com estado).
-
-    ponytail: zera as trilhas de todas as câmeras; um Detector por source_id se entrar a segunda
-    """
-    if detector is not None:
-        detector.zerar()
-        log.info("Sessão nova %s: quiques em andamento descartados", envelope.get("session_id"))
+    """ods.session.started (6c, componente com estado): quique em andamento da sessão anterior
+    não fecha. A posição também troca o Detector pelo session_id; isto cobre o quique que fica
+    parado no meio quando a sessão nova chega antes do primeiro quadro dela."""
+    for source_id in envelope["payload"].get("sources", []):
+        if detectores.get(source_id, (None,))[0] != envelope["session_id"]:
+            detectores.pop(source_id, None)
 
 
 def lance_falso(p):
@@ -199,23 +186,24 @@ def lance_falso(p):
         "decisao_id": str(uuid.uuid4()), "veredito": v, "distancia_cm": round(dist, 1),
         "banda_cm": banda, "lado": random.choice("AB"), "position_m": None,
         "track_id": f"t-{random.randint(1, 999):04d}",
-        "source_id": p["source_id"], "artifact_version": f"cal-{p['source_id']}-3",
+        "source_id": p["source_id"], "artifact_version": f"cal-{p['source_id']}-3", "zones_version": None,
         "origem": "automatica", "operador": None, "veredito_automatico": None,
         "anulada": False, "instante": agora()})
 
 
 @asynccontextmanager
 async def ciclo(_app):
-    global kafka, detector
+    global kafka
     demo = nova_partida(pid="demo")
     tarefa = None
+    registro.carregar()
+    if CALIBRACAO_ARQUIVO:
+        with open(CALIBRACAO_ARQUIVO, encoding="utf-8") as arquivo:
+            conteudo = json.load(arquivo)
+        for envelope in conteudo if isinstance(conteudo, list) else [conteudo]:
+            receber_calibracao(envelope)
     if KAFKA_HABILITADO:
-        try:
-            detector = Detector()
-        except Exception:
-            log.exception("Detector de arbitragem não pôde ser inicializado")
-        kafka = KafkaBridge(receber_decisao_automatica, receber_posicao_s1, receber_calibracao_i3,
-                            receber_sessao)
+        kafka = KafkaBridge(receber_decisao_automatica, receber_calibracao, receber_posicao, receber_sessao)
         try:
             kafka.start()
         except Exception:
@@ -258,11 +246,23 @@ class Correcao(BaseModel):
     operador: str = Field(min_length=1, max_length=100)
 
 
+class PontoDesenho(BaseModel):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
+
+class NovaZona(BaseModel):
+    source_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    largura: int = Field(gt=0)                       # tamanho do quadro em que a zona foi desenhada
+    altura: int = Field(gt=0)
+    pontos: list[PontoDesenho]
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "kafka_habilitado": bool(kafka and kafka.enabled),
             "modo_demo": MODO_DEMO and not KAFKA_HABILITADO,
-            "detector_ativo": detector is not None,
+            "detectores": list(detectores),
             "calibracoes_carregadas": list(calibracoes.keys())}
 
 
@@ -338,6 +338,42 @@ def enquadrar(pan_deg: float = 0.0, tilt_deg: float = 0.0):
         return kafka.mover_camera(pan_deg, tilt_deg)
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/zonas/{source_id}")
+def ler_zona(source_id: str):
+    cal = calibracoes.get(source_id)
+    return {"calibracao": cal.versao if cal else None, "zona": registro.resumo(source_id)}
+
+
+@app.post("/zonas")
+def salvar_zona(corpo: NovaZona):
+    """Converte o desenho para metros, grava a nova versão de ZONES e anuncia no barramento."""
+    cal = calibracoes.get(corpo.source_id)
+    if cal is None:
+        raise HTTPException(409, f"Sem calibração do I3 para {corpo.source_id}; não dá para converter a zona em metros.")
+    pontos = [(p.x, p.y) for p in corpo.pontos]
+    try:
+        poligono = pontos_para_metros(cal, pontos, corpo.largura, corpo.altura)
+        validar_quadra(poligono)
+    except ZonaInvalida as exc:
+        raise HTTPException(422, str(exc)) from exc
+    descritor = registro.salvar(cal, poligono)
+    avisos = ["Vale para os próximos lances. O S1 só aplica uma versão nova na próxima sessão."]
+    erro_cm = erro_quadra_cm(poligono)
+    if erro_cm > TOLERANCIA_CM:
+        avisos.insert(0, f"O desenho foge {erro_cm:.0f} cm de 18 × 9 m: confira os cantos, senão muitos lances viram dúvida.")
+    publicado = False
+    if kafka and kafka.enabled:
+        try:
+            kafka.publicar_evento(TOPICO_PUBLICADO, descritor["artifact_id"], mensagem_publicada(descritor))
+            publicado = True
+        except Exception as exc:
+            log.exception("Falha publicando %s", descritor["artifact_version"])
+            avisos.insert(0, f"Zona salva, mas não anunciada no barramento: {exc}")
+    else:
+        avisos.append("Kafka desligado: a zona foi salva, mas não foi anunciada ao S1.")
+    return registro.resumo(corpo.source_id) | {"aviso": " ".join(avisos), "publicado": publicado}
 
 
 @app.get("/eventos")

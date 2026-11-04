@@ -1,0 +1,8 @@
+.campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.campo { display: grid; gap: 4px; font-size: 14px; font-weight: 600; }
+.campo input, .campo select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; min-height: 46px; font-weight: 400; }
+.caixa { width: 100%; background-color: #000; background-size: 100% 100%; border-radius: 8px; overflow: hidden; user-select: none; }
+.ajuda { color: var(--muted); font-size: 14px; }
+.alerta { background: var(--duvida-bg); border: 1px solid var(--duvida); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.linha { display: flex; flex-wrap: wrap; gap: 10px; }
+.resumo { display: grid; gap: 8px; }

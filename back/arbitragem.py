@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 QUADRA = (18.0, 9.0)                                  # volei FIVB, rede em x = 9
+CANTOS = ((0.0, 0.0), (18.0, 0.0), (18.0, 9.0), (0.0, 9.0))  # medida oficial, sem zona salva
 JANELA = 15                                           # amostras guardadas por trilha
 N_SUBIDA = 3                                          # quadros subindo depois do quique
 # erros que se ajustam no campo
@@ -24,7 +25,9 @@ SUBIDA_MIN_MS = float(os.getenv("A4_SUBIDA_MIN_MS", "3"))
 # largura/altura da caixa: bola em voo deu 0,83 a 0,96 no video, tenis ate 1,64
 FORMATO = (float(os.getenv("A4_FORMATO_MIN", "0.8")), float(os.getenv("A4_FORMATO_MAX", "1.25")))
 
-Calibracao = namedtuple("Calibracao", "source_id versao K dist H rms_cm")
+Calibracao = namedtuple("Calibracao", "source_id versao K dist H rms_cm space_id largura altura")
+# a quadra marcada no editor do b6, em metros (zonas.py)
+Zona = namedtuple("Zona", "poligono erro_cm versao")
 # altura so precisa ter minimo no contato
 Amostra = namedtuple("Amostra", "t_s ponto_m altura")
 
@@ -36,7 +39,8 @@ def calibracao(ev):
     K = np.array([[i["fx"], 0, i["cx"]], [0, i["fy"], i["cy"]], [0, 0, 1]], float)
     return Calibracao(ev["source_id"], ev["artifact_version"], K,
                       np.array(p["distortion"], float),
-                      np.array(p["homography_px_to_m"], float), p["reprojection_rms_cm"])
+                      np.array(p["homography_px_to_m"], float), p["reprojection_rms_cm"],
+                      p["reference_frame"]["space_id"], p.get("image_width"), p.get("image_height"))
 
 
 def para_metros(cal, px):
@@ -84,23 +88,38 @@ def ponto_de_contato(amostras, janela=4):
     return tc, tuple(float(np.polyval(np.polyfit(ts, xy[:, i], 2), 0.0)) for i in (0, 1))
 
 
-def banda_de_duvida_cm(rms_calib_cm, ruido_trilha_cm, vel_ms, erro_t_s):
-    """junta os erros de i3, do rastro e do tempo num sigma"""
-    return float(np.hypot(np.hypot(rms_calib_cm, ruido_trilha_cm), vel_ms * erro_t_s * 100))
+def banda_de_duvida_cm(rms_calib_cm, ruido_trilha_cm, vel_ms, erro_t_s, erro_zona_cm=0.0):
+    """junta os erros de i3, do rastro, do tempo e do desenho da zona num sigma"""
+    return float(np.hypot(np.hypot(np.hypot(rms_calib_cm, ruido_trilha_cm), vel_ms * erro_t_s * 100), erro_zona_cm))
 
 
-def arbitrar(ponto_m, sigma_cm, source_id, versao, track_id, instante):
-    """decide dentro ou fora; se a banda cruza a linha, duvida"""
-    x, y = ponto_m
-    # distancia ate a linha mais perto: positivo fora, negativo dentro
-    d_cm = max(-x, x - QUADRA[0], -y, y - QUADRA[1]) * 100.0
+def distancia_cm(ponto, poligono):
+    """distancia ate a linha mais perto: positivo fora, negativo dentro"""
+    x, y = ponto
+    dentro, menor = False, float("inf")
+    for (ax, ay), (bx, by) in zip(poligono, (*poligono[1:], poligono[0])):
+        dx, dy = bx - ax, by - ay
+        t = np.clip(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy), 0.0, 1.0)
+        menor = min(menor, float(np.hypot(x - (ax + t * dx), y - (ay + t * dy))))
+        if (ay > y) != (by > y) and x < ax + (y - ay) * dx / dy:
+            dentro = not dentro
+    return (-menor if dentro else menor) * 100.0
+
+
+def arbitrar(ponto_m, sigma_cm, source_id, versao, track_id, instante, zona=None):
+    """decide dentro ou fora pela zona; sem zona, pela medida oficial. se a banda cruza a linha, duvida"""
+    poligono = zona.poligono if zona else CANTOS
+    d_cm = distancia_cm(ponto_m, poligono)
+    # eixo x ao longo dos 18 m, como no referencial do i3; a rede fica no meio da quadra
+    rede_x = sum(p[0] for p in poligono) / len(poligono)
     banda = 2.0 * sigma_cm                            # banda de dois sigma
     veredito = "fora" if d_cm - banda > 0 else "dentro" if d_cm + banda < 0 else "duvida"
     return {"decisao_id": str(uuid.uuid4()), "veredito": veredito,
             "distancia_cm": round(d_cm, 1), "banda_cm": round(banda, 1),
-            "lado": "A" if x < QUADRA[0] / 2 else "B",
-            "position_m": [round(x, 2), round(y, 2)], "track_id": track_id,
-            "source_id": source_id, "artifact_version": versao, "origem": "automatica",
+            "lado": "A" if ponto_m[0] < rede_x else "B",
+            "position_m": [round(ponto_m[0], 2), round(ponto_m[1], 2)], "track_id": track_id,
+            "source_id": source_id, "artifact_version": versao,
+            "zones_version": zona.versao if zona else None, "origem": "automatica",
             "operador": None, "veredito_automatico": None, "anulada": False,
             "instante": instante}
 
@@ -115,7 +134,7 @@ class Detector:
         """sessao nova: os track_id antigos nao valem mais"""
         self.trilhas.clear()
 
-    def amostra(self, cal, track_id, t_s, point_px, bbox=None):
+    def amostra(self, cal, track_id, t_s, point_px, zona=None, bbox=None):
         """um quadro da bola, t_s em segundos epoch do captured_at; devolve a decisao
         quando reconhece um quique, senao None"""
         if bbox is not None:
@@ -146,8 +165,8 @@ class Detector:
         vizinhos = hist[i - 1], hist[i + 1]
         vel = np.hypot(*np.subtract(vizinhos[1].ponto_m, vizinhos[0].ponto_m)) / (
             vizinhos[1].t_s - vizinhos[0].t_s)
-        sigma = banda_de_duvida_cm(cal.rms_cm, RUIDO_TRILHA_CM, vel, ERRO_T_S)
+        sigma = banda_de_duvida_cm(cal.rms_cm, RUIDO_TRILHA_CM, vel, ERRO_T_S, zona.erro_cm if zona else 0.0)
         hist.clear()                                  # um quique por minimo
         instante = datetime.fromtimestamp(tc, timezone.utc).isoformat(timespec="milliseconds")
         return arbitrar(ponto, sigma, cal.source_id, cal.versao, track_id,
-                        instante.replace("+00:00", "Z"))
+                        instante.replace("+00:00", "Z"), zona)

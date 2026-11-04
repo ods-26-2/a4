@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // kit do B6: codigo de outra equipe, copiado sem alteracoes
+    "vendor/**",
   ]),
 ]);
 

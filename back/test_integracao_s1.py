@@ -42,14 +42,12 @@ cal_envelope = {
         "reference_frame": {"space_id": "quadra", "origin": "canto", "axes": "x-y", "unit": "m"},
     },
 }
-main.receber_calibracao_i3(cal_envelope)
+main.receber_calibracao(cal_envelope)
 assert "cam0" in main.calibracoes, "calibração não foi registrada"
 print("1. Calibração I3 registrada OK")
 
 # ---- 2. Inicializar o Detector ----
-from arbitragem import Detector
-main.detector = Detector()
-print("2. Detector inicializado OK")
+print("2. Detector nasce por câmera e sessão no main")
 
 # ---- 3. Enviar posições S1 com bola quicando ----
 # Simula uma bola quicando: a altura (v no quadro) faz um V
@@ -82,7 +80,7 @@ for i in range(6, 26):
             ],
         },
     }
-    main.receber_posicao_s1(envelope)
+    main.receber_posicao(envelope)
 
 if decisoes_recebidas:
     d = decisoes_recebidas[0]
@@ -114,13 +112,12 @@ envelope_sem_bola = {
         ],
     },
 }
-main.receber_posicao_s1(envelope_sem_bola)
+main.receber_posicao(envelope_sem_bola)
 assert len(decisoes_recebidas) == decisoes_antes, "pessoa não deveria gerar decisão"
 print("5. Posições de 'person' ignoradas corretamente OK")
 
 # ---- 5. Verifica que sem calibração não processa ----
 main.calibracoes.clear()
-main.detector = Detector()
 envelope_sem_cal = {
     "message_id": str(uuid.uuid4()),
     "schema": "ods.s1.position",
@@ -135,7 +132,7 @@ envelope_sem_cal = {
     },
 }
 decisoes_antes = len(decisoes_recebidas)
-main.receber_posicao_s1(envelope_sem_cal)
+main.receber_posicao(envelope_sem_cal)
 assert len(decisoes_recebidas) == decisoes_antes, "sem calibração não deveria gerar decisão"
 print("6. Sem calibração: posição ignorada corretamente OK")
 

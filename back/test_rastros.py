@@ -7,7 +7,6 @@ import uuid
 from datetime import datetime, timezone
 
 import main
-from arbitragem import Detector
 
 T0 = datetime(2026, 10, 21, 13, 0, tzinfo=timezone.utc).timestamp()   # epoch, como no barramento
 TC = T0 + 0.512                                     # quique entre dois quadros
@@ -36,19 +35,19 @@ def quadro(n, fonte="cam0", curva=10000):
 def lances(p, quadros):
     antes = len(p["decisoes"])
     for ev in quadros:
-        main.receber_posicao_s1(ev)
+        main.receber_posicao(ev)
     return p["decisoes"][antes:]
 
 
-main.detector = Detector()
 p = main.nova_partida(source_id="cam0")
 quique = [quadro(n) for n in range(31)]             # 1 s de bola, quique no quadro ~15
 
 assert lances(p, quique) == [], "sem calibracao do i3 nao pode sair lance"
 
 # homografia simples: 1 px = 1 cm, entao o quique cai em (12, 4.5) m, lado B
-main.receber_calibracao_i3({
+main.receber_calibracao({
     "source_id": "cam0", "artifact_version": "cal-cam0-1", "payload": {
+        "image_width": 1280, "image_height": 720, "reference_frame": {"space_id": "quadra-1"},
         "intrinsics": {"fx": 1000, "fy": 1000, "cx": 640, "cy": 360},
         "distortion": [0, 0, 0, 0, 0], "reprojection_rms_cm": 4.0,
         "homography_px_to_m": [[0.01, 0, 0], [0, 0.01, 0], [0, 0, 1]]}})
