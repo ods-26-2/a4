@@ -25,6 +25,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        for t in ods.session.started ods.i1.detections ods.i2.tracks ods.i3.calibration ods.s1.position; do
+        for t in ods.session.started ods.i1.detections ods.i2.tracks ods.i3.calibration ods.s1.position \
+                 ods.artifact.published ods.p7.move.command ods.p7.state ods.s4.capture.command ods.s4.clip; do
         until /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092
         --create --if-not-exists --topic $$t; do sleep 1; done; done

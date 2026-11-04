@@ -26,9 +26,23 @@ assert placar(p)["pontos"] == {"A": 0, "B": 0}, "desfazer deve anular o ponto"
 
 assert TOPICO_COMANDO_P7 == "ods.p7.move.command"
 assert TOPICO_ESTADO_P7 == "ods.p7.state"
-normalizada = KafkaBridge._normalizar_decisao({
-    "message_id": "msg-1", "schema": "ods.regra.evento_consolidado", "occurred_at": agora(),
-    "payload": {"veredito": "dentro", "lado": "B", "source_id": "cam0", "track_id": "track-2"},
-})
-assert normalizada and normalizada["veredito"] == "dentro" and normalizada["lado"] == "B"
 print("score manager e contratos P7 ok")
+
+# 6c, perfil CMD: os seis campos fixos e o target; P7 com o mecanismo e os angulos absolutos
+cmd = KafkaBridge.comando("ods.p7.move.command", "P7", {"source_id": "pt0", "pan_deg": 12.5, "tilt_deg": -8.0})
+assert {"message_type", "message_id", "schema", "schema_version", "producer", "published_at", "target"} <= set(cmd), cmd
+assert cmd["target"] == "P7" and cmd["payload"]["source_id"] == "pt0", cmd
+
+# replay: o ods.s4.clip do pedido (correlation_id) entra no lance, com a URL da midia
+import main
+main.S4_MIDIA_URL = "http://s4.local/midia"
+p = nova_partida(source_id="cam0")
+adicionar_decisao(p, decisao("d-replay", "fora", "A"))
+main.clipes_pedidos["pedido-1"] = "d-replay"
+main.receber_clipe({"correlation_id": "pedido-1", "payload": {
+    "clip_id": "c-1", "media_type": "CLIP", "media_uri": "s4://clips/2026/11/04/c-1.mp4",
+    "start_at": "2026-11-04T01:00:00.000Z", "end_at": "2026-11-04T01:00:05.000Z",
+    "hash_sha256": "0" * 64, "expires_at": "2026-12-04T01:00:05.000Z"}})
+clip = next(d for d in p["decisoes"] if d["decisao_id"] == "d-replay")["clip"]
+assert clip["url"] == "http://s4.local/midia/clips/2026/11/04/c-1.mp4" and "pedido-1" not in main.clipes_pedidos, clip
+print("comandos 6c e replay do S4 ok")

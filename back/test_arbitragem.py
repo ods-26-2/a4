@@ -1,5 +1,9 @@
-"""python test_arbitragem.py -- confere a regra do rule engine, com pontos ja em metros"""
-from arbitragem import Amostra, arbitrar, ponto_de_contato
+"""python test_arbitragem.py -- regra de dentro e fora e o quique pela trajetoria 3D"""
+import numpy as np
+
+import cena_sintetica as cena
+from arbitragem import Detector, arbitrar, calibracao
+from trajetoria import Arco, Camera, sem_distorcao
 
 
 def decide(x, y, sigma_cm=5.0):
@@ -9,35 +13,87 @@ def decide(x, y, sigma_cm=5.0):
 d = decide(17.0, 4.5)
 assert (d["veredito"], d["lado"]) == ("dentro", "B"), d
 assert (d["artifact_version"], d["track_id"]) == ("cal-cam0-3", "t-0001"), d
-
 d = decide(18.5, 4.5)
 assert (d["veredito"], d["distancia_cm"]) == ("fora", 50.0), d
-
-# 2 cm fora, mas a banda de 2 sigma e 10 cm: cruza a linha
-assert decide(18.02, 4.5)["veredito"] == "duvida"
-
-# fora pela lateral, no lado A
+assert decide(18.02, 4.5)["veredito"] == "duvida"        # 2 cm fora, banda de 10 cm
 d = decide(3.0, -0.4)
 assert (d["veredito"], d["lado"]) == ("fora", "A"), d
 
-# quique em V em t = 0,5 s; no plano a bola anda reto a 10 m/s em x
-amostras = [Amostra(t, (12.0 + 10 * (t - 0.5), 4.0), abs(t - 0.5))
-            for t in (i / 30 for i in range(6, 25))]
-tc, (x, y) = ponto_de_contato(amostras)
-assert abs(tc - 0.5) < 1e-3 and abs(x - 12.0) < 0.01 and abs(y - 4.0) < 0.01, (tc, x, y)
+CAL = calibracao(cena.envelope())
+cam = Camera(CAL)
+# a pose sai da homografia e dos intrinsecos
+assert np.allclose(cam.centro, cena.CENTRO, atol=1e-6), cam.centro
+assert np.allclose(cam.projetar(np.array([3.0, 2.0, 1.5])), cena.pixel(np.array([3.0, 2.0, 1.5])), atol=1e-6)
 
-# bola no alto da parabola (altura com maximo, nao minimo): nao e quique, e nao pode quebrar
-topo = [Amostra(t, (12.0, 4.0), -abs(t - 0.5)) for t in (i / 30 for i in range(6, 25))]
-assert ponto_de_contato(topo) is None
+# distorcao: o pixel corrigido, distorcido de novo, volta ao bruto
+K, dist = CAL.K, np.array([-0.3, 0.1, 0.001, -0.002, -0.02])
+bruto = np.array([1100.0, 600.0])
+x, y = (sem_distorcao(K, dist, bruto) - K[:2, 2]) / K[0, 0]
+r2 = x * x + y * y
+xd = x * (1 - 0.3 * r2 + 0.1 * r2 ** 2 - 0.02 * r2 ** 3) + 2 * 0.001 * x * y - 0.002 * (r2 + 2 * x * x)
+assert abs(xd * K[0, 0] + K[0, 2] - bruto[0]) < 1e-6
 
-# descida reta sem fundo: o vertice so existiria fora das amostras, a quilometros
-descida = [Amostra(t, (12.0, 4.0), 1.0 - t + 0.01 * t * t) for t in (i / 30 for i in range(7))]
-assert ponto_de_contato(descida) is None
+# um voo so, com ruido de 1 px: a gravidade fixa a profundidade
+pts = cena.toque((6.0, 4.0, 2.5), (0, 0, 0), (8.0, 1.0, 6.0), antes_s=0, depois_s=0.8)
+arco = Arco(cam, [(t, *cam.pixel(px)) for t, px in cena.pixels(pts)])
+# a altura sai precisa porque a camera ve a bola quase de lado; a profundidade, ao longo do
+# raio, e o eixo fraco de uma camera so -- no quique ela nao pesa: no chao, z = 0 fixa o ponto
+erro = arco.em(1.4) - pts[12][1]
+assert abs(erro[2]) < 0.15 and abs(erro[0]) < 0.25, erro
 
-# o mesmo quique com t_s em epoch, como chega de captured_at
-EPOCH = 1_793_000_000.0
-amostras = [Amostra(a.t_s + EPOCH, a.ponto_m, a.altura) for a in amostras]
-tc, (x, y) = ponto_de_contato(amostras)
-assert abs(tc - EPOCH - 0.5) < 1e-3 and abs(x - 12.0) < 0.01 and abs(y - 4.0) < 0.01, (tc - EPOCH, x, y)
+
+def rodar(*trajetos, cal=CAL, extra=()):
+    """passa os quadros pelo Detector: cada trajeto e [(t, px)] de um objeto"""
+    det, decisoes = Detector(), []
+    por_t = {}
+    for k, tr in enumerate(trajetos):
+        for t, px in tr:
+            por_t.setdefault(round(t * cena.FPS), []).append((f"t-ball-{k}", px))
+    # o s1 manda um quadro por quadro de camera, com bola ou sem: segue 1 s depois do fim
+    for n in range(min(por_t), max(por_t) + int(cena.FPS) + 1):
+        d = det.quadro(cal, 1_793_000_000 + n / cena.FPS, por_t.get(n, []) + list(extra))
+        if d:
+            decisoes.append(d)
+    return decisoes
+
+
+def instante_s(d):
+    from datetime import datetime
+    return datetime.fromisoformat(d["instante"].replace("Z", "+00:00")).timestamp() - 1_793_000_000
+
+
+# 1. quique no chao dentro, lado B: um lance, no ponto e no instante
+(d,) = rodar(cena.pixels(cena.quique((12.0, 4.5), (6.0, 1.0, -9.0))))
+assert (d["veredito"], d["lado"]) == ("dentro", "B"), d
+assert np.hypot(d["position_m"][0] - 12.0, d["position_m"][1] - 4.5) < 0.15, d
+assert abs(instante_s(d) - 1.0) < 0.02, instante_s(d)
+
+# 2. toque de jogador a 1 m (manchete): a bola desce e sobe, mas no ar -- nao e lance
+assert rodar(cena.pixels(cena.toque((5.0, 4.0, 1.0), (4.0, 0.5, -6.0), (2.0, 0.0, 7.0)))) == []
+
+# 3. levantamento a 2,8 m, perto da rede: nao e lance
+assert rodar(cena.pixels(cena.toque((8.0, 5.0, 2.8), (1.0, 0.5, -3.0), (0.5, 0.0, 4.0)))) == []
+
+# 4. bola parada no banco e um falso positivo que pisca nao atrapalham
+parada = [(t, (200.0, 500.0)) for t, _ in cena.quique((12.0, 4.5), (6.0, 1.0, -9.0))]
+(d,) = rodar(cena.pixels(cena.quique((12.0, 4.5), (6.0, 1.0, -9.0))), parada,
+             extra=[("t-ball-9", (900.0, 100.0))])
+assert d["veredito"] == "dentro", d
+
+# 5. fora pelo fundo: 60 cm alem da linha
+(d,) = rodar(cena.pixels(cena.quique((18.6, 3.0), (8.0, 0.0, -10.0))))
+assert d["veredito"] == "fora" and 45 < d["distancia_cm"] < 75, d
+
+# 6. a bola some logo depois do chao (rastreio perde): o voo que chega a z = 0 decide
+so_chegada = [(t, X) for t, X in cena.quique((10.5, 6.0), (-5.0, 1.0, -8.0)) if t <= 1.0]
+# com um arco so a profundidade fica com a incerteza dele: o ponto erra mais, e a banda diz isso
+(d,) = rodar(cena.pixels(so_chegada))
+erro_cm = 100 * np.hypot(d["position_m"][0] - 10.5, d["position_m"][1] - 6.0)
+assert d["veredito"] == "dentro" and erro_cm < 50 and d["banda_cm"] > erro_cm, d
+
+# 7. o segundo quique do mesmo rally nao vira outro lance: a bola ja estava morta
+primeiro = cena.quique((12.0, 4.5), (6.0, 1.0, -9.0), depois_s=0.45)
+segundo = [(t + 0.95, X) for t, X in cena.quique((14.7, 4.95), (6.0, 1.0, -6.3), antes_s=0.5)]
+assert len(rodar(cena.pixels(primeiro + segundo))) == 1
 
 print("arbitragem ok")

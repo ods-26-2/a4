@@ -1,8 +1,8 @@
 """Integração opcional do A4 com o barramento Kafka do ODS.
 
 Ative com A4_KAFKA_ENABLED=true. O frontend nunca acessa Kafka diretamente:
-este módulo publica comandos do P7 e artefatos, e consome estado do P7, eventos consolidados
-da regra, calibração do I3, posição do S1 e início de sessão.
+este módulo publica comandos do P7 e pedidos de clipe ao S4, e consome estado do P7, clipes do
+S4, calibração do I3, posição do S1 e início de sessão. O lance é decidido aqui no A4 (6c), não chega pronto.
 """
 from __future__ import annotations
 
@@ -19,10 +19,12 @@ log = logging.getLogger("a4.kafka")
 
 TOPICO_COMANDO_P7 = "ods.p7.move.command"
 TOPICO_ESTADO_P7 = "ods.p7.state"
-TOPICO_REGRA = os.getenv("A4_KAFKA_TOPIC_REGRA", "ods.regra.evento_consolidado")
 TOPICO_CALIBRACAO = "ods.i3.calibration"
 TOPICO_POSICAO = "ods.s1.position"
 TOPICO_SESSAO = "ods.session.started"
+TOPICO_CAPTURA_S4 = "ods.s4.capture.command"
+TOPICO_CLIPE_S4 = "ods.s4.clip"
+P7_SOURCE_ID = os.getenv("A4_P7_SOURCE_ID", "pt0")        # mecanismo pan-tilt do A4 (6c)
 CAMPOS_ENVELOPE = ("message_id", "message_type", "schema", "schema_version", "producer", "payload")
 VERSAO_SUPORTADA = "1."
 MAX_VISTOS = 5000
@@ -53,15 +55,15 @@ class KafkaBridge:
 
     def __init__(
         self,
-        ao_receber_decisao: Callable[[dict[str, Any]], None],
         ao_receber_calibracao: Callable[[dict[str, Any]], None] | None = None,
         ao_receber_posicao: Callable[[dict[str, Any]], None] | None = None,
         ao_receber_sessao: Callable[[dict[str, Any]], None] | None = None,
+        ao_receber_clipe: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.bootstrap = os.getenv("A4_KAFKA_BOOTSTRAP_SERVERS", "34.66.235.91:9093")
-        self._ao_receber_decisao = ao_receber_decisao
         self._ao_receber = {topico: f for topico, f in ((TOPICO_CALIBRACAO, ao_receber_calibracao),
-                            (TOPICO_POSICAO, ao_receber_posicao), (TOPICO_SESSAO, ao_receber_sessao)) if f}
+                            (TOPICO_POSICAO, ao_receber_posicao), (TOPICO_SESSAO, ao_receber_sessao),
+                            (TOPICO_CLIPE_S4, ao_receber_clipe)) if f}
         self._vistos: OrderedDict[str, None] = OrderedDict()
         self._producer = None
         self._consumer = None
@@ -113,7 +115,7 @@ class KafkaBridge:
                     p.offset = OFFSET_BEGINNING
             consumer.assign(particoes)
 
-        topicos = [TOPICO_ESTADO_P7, TOPICO_REGRA, *self._ao_receber]
+        topicos = [TOPICO_ESTADO_P7, *self._ao_receber]
         self._consumer.subscribe(topicos, on_assign=posicionar)
         self._enabled = True
         with self._lock:
@@ -140,52 +142,42 @@ class KafkaBridge:
         with self._lock:
             return dict(self._camera_state) | {"topico": TOPICO_ESTADO_P7}
 
-    def mover_camera(self, pan_deg: float, tilt_deg: float) -> dict[str, Any]:
+    @staticmethod
+    def comando(schema: str, alvo: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """envelope de comando da 6c: os seis campos fixos e o target (perfil CMD)"""
+        return {"message_type": "command", "message_id": str(uuid.uuid4()), "schema": schema,
+                "schema_version": "1.0", "producer": "A4", "published_at": agora(), "target": alvo,
+                "payload": payload}
+
+    def _enviar(self, envelope: dict[str, Any], chave: str) -> None:
         if not self._enabled or self._producer is None:
-            raise RuntimeError("Integração P7 indisponível. Configure A4_KAFKA_ENABLED=true e reinicie o backend.")
-        command_id = str(uuid.uuid4())
-        envelope = {
-            "message_id": command_id,
-            "message_type": "command",
-            "schema": TOPICO_COMANDO_P7,
-            "schema_version": "1.0",
-            "producer": "A4",
-            "occurred_at": agora(),
-            "payload": {
-                "command_id": command_id,
-                "pan_deg": float(pan_deg),
-                "tilt_deg": float(tilt_deg),
-            },
-        }
+            raise RuntimeError("Kafka não habilitado. Configure A4_KAFKA_ENABLED=true e reinicie o backend.")
         try:
-            self._producer.produce(
-                TOPICO_COMANDO_P7,
-                key=command_id.encode("utf-8"),
-                value=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
-            )
+            self._producer.produce(envelope["schema"], key=chave.encode("utf-8"),
+                                   value=json.dumps(envelope, ensure_ascii=False).encode("utf-8"))
             remaining = self._producer.flush(5)
             if remaining:
-                raise RuntimeError(f"Kafka não confirmou o envio do comando (mensagens pendentes: {remaining})")
+                raise RuntimeError(f"Kafka não confirmou o envio (mensagens pendentes: {remaining})")
         except Exception as exc:
-            log.exception("Falha publicando comando P7")
-            raise RuntimeError(f"Falha ao enviar comando para o P7: {exc}") from exc
-        return {
-            "status": "ENVIADO",
-            "command_id": command_id,
-            "pan_deg": float(pan_deg),
-            "tilt_deg": float(tilt_deg),
-            "topico": TOPICO_COMANDO_P7,
-            "aviso": "Comando publicado; aguardando confirmação em ods.p7.state.",
-        }
+            log.exception("Falha publicando %s", envelope["schema"])
+            raise RuntimeError(f"Falha ao enviar {envelope['schema']}: {exc}") from exc
 
-    def publicar_evento(self, topico: str, chave: str, envelope: dict[str, Any]) -> None:
-        if not self._enabled or self._producer is None:
-            raise RuntimeError("Kafka não habilitado")
-        self._producer.produce(topico, key=chave.encode("utf-8"),
-                               value=json.dumps(envelope, ensure_ascii=False).encode("utf-8"))
-        remaining = self._producer.flush(5)
-        if remaining:
-            raise RuntimeError(f"Kafka não confirmou o envio (mensagens pendentes: {remaining})")
+    def mover_camera(self, pan_deg: float, tilt_deg: float) -> dict[str, Any]:
+        """ods.p7.move.command: ângulos absolutos; a conclusão vem por ods.p7.state"""
+        envelope = self.comando(TOPICO_COMANDO_P7, "P7", {"source_id": P7_SOURCE_ID, "pan_deg": float(pan_deg),
+                                                          "tilt_deg": float(tilt_deg)})
+        self._enviar(envelope, P7_SOURCE_ID)
+        return {"status": "ENVIADO", "command_id": envelope["message_id"], "pan_deg": float(pan_deg),
+                "tilt_deg": float(tilt_deg), "topico": TOPICO_COMANDO_P7,
+                "aviso": "Comando publicado; aguardando confirmação em ods.p7.state."}
+
+    def pedir_clipe(self, source_id: str, inicio: str, fim: str, rotulo: str) -> str:
+        """ods.s4.capture.command de um CLIP; o descritor volta por ods.s4.clip com
+        correlation_id = message_id deste pedido, que é o que se devolve"""
+        envelope = self.comando(TOPICO_CAPTURA_S4, "S4", {"source_id": source_id, "media_type": "CLIP",
+                                                          "start_at": inicio, "end_at": fim, "label": rotulo})
+        self._enviar(envelope, source_id)
+        return envelope["message_id"]
 
     def _repetida(self, message_id: str) -> bool:
         """A mesma mensagem pode chegar duas vezes (guia do Kafka, 4.4)."""
@@ -220,10 +212,6 @@ class KafkaBridge:
                     envelope = json.loads(msg.value().decode("utf-8"))
                     if msg.topic() == TOPICO_ESTADO_P7:
                         self._atualizar_estado_camera(envelope)
-                    elif msg.topic() == TOPICO_REGRA:
-                        decisao = self._normalizar_decisao(envelope)
-                        if decisao:
-                            self._ao_receber_decisao(decisao)
                     elif msg.topic() in self._ao_receber:
                         self._tratar_contrato(msg.topic(), envelope)
                 except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
@@ -234,6 +222,8 @@ class KafkaBridge:
                 log.exception("Erro no consumidor Kafka")
 
     def _atualizar_estado_camera(self, envelope: dict[str, Any]) -> None:
+        if envelope.get("source_id", P7_SOURCE_ID) != P7_SOURCE_ID:
+            return                                    # outro mecanismo no mesmo tópico
         payload = envelope.get("payload", envelope)
         pan = payload.get("pan_deg", payload.get("pan"))
         tilt = payload.get("tilt_deg", payload.get("tilt"))
@@ -244,43 +234,7 @@ class KafkaBridge:
                 "estado_recebido": True,
                 "pan_deg": float(pan) if pan is not None else self._camera_state["pan_deg"],
                 "tilt_deg": float(tilt) if tilt is not None else self._camera_state["tilt_deg"],
-                "atualizado_em": envelope.get("occurred_at") or envelope.get("published_at") or agora(),
+                "atualizado_em": envelope.get("captured_at") or envelope.get("published_at") or agora(),
                 "mensagem": payload.get("status", payload.get("state", "Estado recebido do P7")),
                 "raw": payload,
             })
-
-    @staticmethod
-    def _normalizar_decisao(envelope: dict[str, Any]) -> dict[str, Any] | None:
-        """Aceita o envelope do tópico de regra e extrai a decisão A4.
-
-        O produtor de S2 pode publicar a decisão diretamente no payload ou dentro de
-        `decisao`/`decision`. Campos desconhecidos são ignorados.
-        """
-        payload = envelope.get("payload", envelope)
-        if not isinstance(payload, dict):
-            return None
-        decisao = payload.get("decisao", payload.get("decision", payload))
-        if not isinstance(decisao, dict):
-            return None
-        veredito = decisao.get("veredito", decisao.get("verdict"))
-        if veredito not in {"dentro", "fora", "duvida"}:
-            return None
-        lado = decisao.get("lado", decisao.get("side"))
-        if lado not in {"A", "B"}:
-            log.warning("Evento de regra sem lado A/B; ignorado")
-            return None
-        return {
-            "decisao_id": str(decisao.get("decisao_id") or decisao.get("decision_id") or envelope.get("message_id") or uuid.uuid4()),
-            "veredito": veredito,
-            "distancia_cm": float(decisao.get("distancia_cm", decisao.get("distance_cm", 0.0))),
-            "banda_cm": float(decisao.get("banda_cm", decisao.get("uncertainty_cm", 0.0))),
-            "lado": lado,
-            "track_id": str(decisao.get("track_id", "desconhecido")),
-            "source_id": str(decisao.get("source_id", payload.get("source_id", "cam0"))),
-            "artifact_version": str(decisao.get("artifact_version", "desconhecida")),
-            "origem": "automatica",
-            "operador": None,
-            "veredito_automatico": None,
-            "anulada": False,
-            "instante": decisao.get("instante") or decisao.get("occurred_at") or envelope.get("occurred_at") or agora(),
-        }

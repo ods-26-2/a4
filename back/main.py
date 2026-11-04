@@ -14,7 +14,7 @@ import os
 import random
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +25,7 @@ from pydantic import BaseModel, Field
 
 from arbitragem import Detector, calibracao
 from kafka_bridge import KafkaBridge
-from zonas import (TOLERANCIA_CM, TOPICO_PUBLICADO, Registro, ZonaInvalida, erro_quadra_cm,
-                   mensagem_publicada, pontos_para_metros, validar_quadra)
+from zonas import TOLERANCIA_CM, Registro, ZonaInvalida, erro_quadra_cm, pontos_para_metros, validar_quadra
 
 logging.basicConfig(level=os.getenv("A4_LOG_LEVEL", "INFO"))
 log = logging.getLogger("a4")
@@ -36,8 +35,8 @@ MODO_DEMO = os.getenv("A4_MODO_DEMO", "true").lower() in {"1", "true", "yes", "s
 KAFKA_HABILITADO = os.getenv("A4_KAFKA_ENABLED", "false").lower() in {"1", "true", "yes", "sim"}
 VEREDITOS = ("dentro", "fora", "duvida")
 CALIBRACAO_ARQUIVO = os.getenv("A4_CALIBRACAO_ARQUIVO")
-# ponytail: pseudo-P6, uma gravação em arquivo no lugar do P6 da TRA-2 e dos clipes do S4;
-# sai quando o P6 servir o stream e o replay vier de ods.s4.clip
+# fonte de vídeo do player (decisão do A4): a gravação que a câmera do jogo toca, servida aqui.
+# na 6c o vídeo fica fora do barramento; o player toca qualquer URL, então outra fonte é outra URL
 P6_VIDEO = Path(os.getenv("A4_P6_VIDEO") or Path(__file__).parent.parent / "old" / "yolo" / "clipe.mp4")
 
 partidas: dict[str, dict[str, Any]] = {}
@@ -47,6 +46,10 @@ calibracoes: dict[str, Any] = {}                     # source_id -> Calibracao m
 detectores: dict[str, tuple[str, Detector]] = {}     # source_id -> (session_id, Detector)
 # último ods.session.started: started_at amarra o captured_at dos lances à posição no vídeo
 sessao_p6: dict[str, Any] | None = None
+clipes_pedidos: dict[str, str] = {}                  # message_id do ods.s4.capture.command -> decisao_id
+# media_uri do S4 (s4://<caminho>) vira URL do navegador por esta base: acesso controlado do S4
+S4_MIDIA_URL = os.getenv("A4_S4_MEDIA_URL", "").rstrip("/")
+REPLAY_ANTES_S, REPLAY_DEPOIS_S = 3.0, 2.0
 
 
 def agora():
@@ -129,7 +132,7 @@ def adicionar_decisao(p, decisao):
 
 
 def receber_decisao_automatica(decisao: dict[str, Any]):
-    """Recebe uma decisão do tópico ods.regra.evento_consolidado."""
+    """Lance decidido pelo Detector (ods.s1.position): vai para a partida aberta da câmera."""
     source_id = str(decisao.get("source_id", "cam0"))
     # A decisão vai para a partida aberta mais recente associada à câmera de origem.
     candidatas = [p for p in partidas.values() if not p["encerrada"] and p["source_id"] == source_id]
@@ -163,14 +166,13 @@ def receber_posicao(envelope: dict[str, Any]):
         detectores[source_id] = (sessao, Detector())  # sessão nova: os track_id antigos não valem
     detector = detectores[source_id][1]
     t_s = datetime.fromisoformat(envelope["captured_at"].replace("Z", "+00:00")).timestamp()
-    for posicao in envelope["payload"]["positions"]:
-        if posicao["class"] != "ball":
-            continue
-        # ponytail: o S1 não repassa predicted nem bbox do I2 (6c), então ponto extrapolado
-        # na oclusão e caixa de tênis entram; sobra o filtro de velocidade do Detector
-        decisao = detector.amostra(cal, posicao["track_id"], t_s, posicao["point_px"], registro.atual(source_id))
-        if decisao:
-            receber_decisao_automatica(decisao)
+    # todas as bolas do quadro juntas: a bola em jogo e a que voa, nao um track_id
+    # o ods.s1.position nao traz predicted (6c): ponto extrapolado pelo I2 chega como medido. o
+    # ajuste do arco descarta o que nao voa, e o I2 so extrapola dentro do horizonte da predicao
+    pontos = [(p["track_id"], p["point_px"]) for p in envelope["payload"]["positions"] if p["class"] == "ball"]
+    decisao = detector.quadro(cal, t_s, pontos, registro.atual(source_id))
+    if decisao:
+        receber_decisao_automatica(decisao)
 
 
 def receber_sessao(envelope: dict[str, Any]):
@@ -184,6 +186,20 @@ def receber_sessao(envelope: dict[str, Any]):
     for source_id in envelope["payload"].get("sources", []):
         if detectores.get(source_id, (None,))[0] != envelope["session_id"]:
             detectores.pop(source_id, None)
+
+
+def receber_clipe(envelope: dict[str, Any]):
+    """ods.s4.clip do pedido de replay: o clipe fica no lance e a tela recebe pela partida"""
+    did = clipes_pedidos.pop(str(envelope.get("correlation_id")), None)
+    if did is None:
+        return                                        # clipe de outro pedido ou de outra aplicação
+    p, d = buscar_decisao(did)
+    c = envelope["payload"]
+    uri = c["media_uri"]
+    url = f"{S4_MIDIA_URL}/{uri.removeprefix('s4://')}" if S4_MIDIA_URL and uri.startswith("s4://") else None
+    d["clip"] = {"clip_id": c["clip_id"], "media_uri": uri, "url": url, "start_at": c["start_at"],
+                 "end_at": c["end_at"], "expires_at": c["expires_at"]}
+    mudou(p)
 
 
 def lance_falso(p):
@@ -213,7 +229,7 @@ async def ciclo(_app):
         for envelope in conteudo if isinstance(conteudo, list) else [conteudo]:
             receber_calibracao(envelope)
     if KAFKA_HABILITADO:
-        kafka = KafkaBridge(receber_decisao_automatica, receber_calibracao, receber_posicao, receber_sessao)
+        kafka = KafkaBridge(receber_calibracao, receber_posicao, receber_sessao, receber_clipe)
         try:
             kafka.start()
         except Exception:
@@ -329,18 +345,30 @@ def video_p6():
     return FileResponse(P6_VIDEO, media_type="video/mp4")
 
 
+@app.post("/decisoes/{did}/replay")
+def replay(did: str):
+    """6c (A4): o replay da jogada é um clipe do S4, pedido por ods.s4.capture.command. O clipe
+    chega por ods.s4.clip e aparece no lance; até lá, a tela salta na gravação que já toca."""
+    _, d = buscar_decisao(did)
+    if not kafka or not kafka.enabled:
+        raise HTTPException(503, "Sem barramento: o replay fica na gravação local.")
+    t = datetime.fromisoformat(d["instante"].replace("Z", "+00:00"))
+    janela = [(t + timedelta(seconds=s)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+              for s in (-REPLAY_ANTES_S, REPLAY_DEPOIS_S)]
+    try:
+        pedido = kafka.pedir_clipe(d["source_id"], *janela, f"lance {did}")
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    clipes_pedidos[pedido] = did
+    return {"pedido": pedido, "start_at": janela[0], "end_at": janela[1]}
+
+
 @app.get("/p6")
 def estado_p6():
     """O que o player precisa: qual vídeo (muda o nome, o player recarrega) e a sessão de replay
     em curso, a que alinha o player à câmera e faz o lance cair em instante - started_at."""
     video = f"{P6_VIDEO.name}-{P6_VIDEO.stat().st_size}" if P6_VIDEO.is_file() else None
     return {"video": video, "sessao": sessao_p6}
-
-
-@app.post("/decisoes/{did}/replay")
-def replay(did: str):
-    buscar_decisao(did)
-    return {"clip_id": None, "aviso": "Replay indisponível: integração com P6/S4 ainda não configurada."}
 
 
 @app.get("/camera/estado")
@@ -354,10 +382,10 @@ def estado_camera():
 
 @app.post("/camera/enquadrar")
 def enquadrar(pan_deg: float = 0.0, tilt_deg: float = 0.0):
-    if not (-180 <= pan_deg <= 180):
-        raise HTTPException(422, "pan_deg deve estar entre -180 e 180 graus")
-    if not (-90 <= tilt_deg <= 90):
-        raise HTTPException(422, "tilt_deg deve estar entre -90 e 90 graus")
+    if not (-90 <= pan_deg <= 90):                    # faixas do ods.p7.move.command (6c)
+        raise HTTPException(422, "pan_deg deve estar entre -90 e 90 graus")
+    if not (-45 <= tilt_deg <= 45):
+        raise HTTPException(422, "tilt_deg deve estar entre -45 e 45 graus")
     if not kafka or not kafka.enabled:
         raise HTTPException(503, "Integração P7 indisponível. Configure A4_KAFKA_ENABLED=true e reinicie o backend.")
     try:
@@ -402,22 +430,14 @@ def usar_zona(source_id: str, versao: str):
 
 
 def gravar_zona(cal, poligono):
-    descritor = registro.salvar(cal, poligono)
-    avisos = ["Vale para os próximos lances. O S1 só aplica uma versão nova na próxima sessão."]
+    """a quadra e configuracao do proprio A4 (regra de dentro e fora): na 6c o A4 nao produz
+    ZONES, entao a versao fica no registro local e nao e anunciada no barramento"""
+    registro.salvar(cal, poligono)
+    avisos = ["Vale para os próximos lances."]
     erro_cm = erro_quadra_cm(poligono)
     if erro_cm > TOLERANCIA_CM:
         avisos.insert(0, f"O desenho foge {erro_cm:.0f} cm de 18 × 9 m: confira os cantos, senão muitos lances viram dúvida.")
-    publicado = False
-    if kafka and kafka.enabled:
-        try:
-            kafka.publicar_evento(TOPICO_PUBLICADO, descritor["artifact_id"], mensagem_publicada(descritor))
-            publicado = True
-        except Exception as exc:
-            log.exception("Falha publicando %s", descritor["artifact_version"])
-            avisos.insert(0, f"Zona salva, mas não anunciada no barramento: {exc}")
-    else:
-        avisos.append("Kafka desligado: a zona foi salva, mas não foi anunciada ao S1.")
-    return registro.resumo(cal.source_id) | {"aviso": " ".join(avisos), "publicado": publicado}
+    return registro.resumo(cal.source_id) | {"aviso": " ".join(avisos)}
 
 
 @app.get("/eventos")

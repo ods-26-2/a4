@@ -9,7 +9,6 @@ import json
 import math
 import os
 import re
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,7 +17,6 @@ import numpy as np
 from arbitragem import QUADRA, Zona, para_metros
 
 PRODUTOR = "A4"
-TOPICO_PUBLICADO = "ods.artifact.published"
 ZONE_ID = "quadra"
 HISTERESE_MS = 100                                    # o a4 nao usa a transicao para decidir
 TOLERANCIA_CM = float(os.getenv("A4_ZONA_TOLERANCIA_CM", "30"))
@@ -80,19 +78,6 @@ def conteudo_zones(cal, poligono):
             "exit_hysteresis_ms": HISTERESE_MS,
             "classes": ["ball"],
         }],
-    }
-
-
-def mensagem_publicada(descritor):
-    """envelope de ods.artifact.published; o payload e o proprio descritor"""
-    return {
-        "message_type": "event",
-        "message_id": str(uuid.uuid4()),
-        "schema": TOPICO_PUBLICADO,
-        "schema_version": "1.0",
-        "producer": PRODUTOR,
-        "published_at": agora(),
-        "payload": descritor,
     }
 
 

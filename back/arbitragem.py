@@ -1,35 +1,43 @@
 """rule engine do a4 -- card A4.1 do sprint 3
 
-entra a posicao da bola por quadro (point_px do rastro) e a calibracao de
+entra a posicao da bola por quadro (point_px de ods.s1.position) e a calibracao de
 ods.i3.calibration; sai uma decisao dentro, fora ou duvida no formato da api do a4.
 a decisao automatica e so proposta: o arbitro decide.
+
+o quique sai da trajetoria 3D (trajetoria.py): arcos balisticos e a altura de cada contato.
+so contato no chao, dentro da incerteza do ajuste, vira lance; toque de jogador fica no ar.
 """
-import os
+import math
 import uuid
-from collections import defaultdict, namedtuple
+from collections import namedtuple
 from datetime import datetime, timezone
 
 import numpy as np
 
+from trajetoria import (Arco, Camera, SIGMA_PX, chegada_ao_chao, contato, contato_conjunto,
+                        quique_possivel)
+
 QUADRA = (18.0, 9.0)                                  # volei FIVB, rede em x = 9
 CANTOS = ((0.0, 0.0), (18.0, 0.0), (18.0, 9.0), (0.0, 9.0))  # medida oficial, sem zona salva
-JANELA = 15                                           # amostras guardadas por trilha
-N_SUBIDA = 3                                          # quadros subindo depois do quique
-# erros que se ajustam no campo
-RUIDO_TRILHA_CM = float(os.getenv("A4_RUIDO_TRILHA_CM", "3"))
-ERRO_T_S = float(os.getenv("A4_ERRO_T_S", str(1 / 60)))     # meio quadro a 30 fps
-# o que separa quique de bola parada no chao (tenis amarelo, logo, bola na mao): a bola
-# chega rapido e sai rapido. o sacador quicando a bola fica em 3,6 a 5,4 m/s
-DESCIDA_MIN_MS = float(os.getenv("A4_DESCIDA_MIN_MS", "6"))
-SUBIDA_MIN_MS = float(os.getenv("A4_SUBIDA_MIN_MS", "3"))
-# largura/altura da caixa: bola em voo deu 0,83 a 0,96 no video, tenis ate 1,64
-FORMATO = (float(os.getenv("A4_FORMATO_MIN", "0.8")), float(os.getenv("A4_FORMATO_MAX", "1.25")))
+
+# o que a fisica e a regra pedem, nao o video
+MIN_ARCO = 8           # quadros de um voo: 0,27 s a 30 fps, a gravidade ja curva o arco
+FOLGA = 4.0            # erro, em sigmas do ponto, para o ponto ainda ser do arco
+VAO_S = 0.3            # buraco maximo entre o fim de um arco e o comeco do outro no mesmo toque
+SALTO_PX = 45          # quanto a bola anda entre dois quadros: 30 m/s a 18 m da camera
+JANELA_S = 1.0         # pontos soltos guardados para achar o proximo arco
+VEL_MAX = 40.0         # m/s; saque mais forte do volei fica perto de 35
+Z_JOGADOR = 0.6        # m; acima disso o contato e de jogador mesmo com 2 sigma de folga
+# o chao nao da energia a bola nem desvia o movimento no plano: ela volta mais devagar na
+# vertical (restituicao < 1) e segue na mesma direcao, perdendo um pouco de velocidade
+RESTITUICAO = (0.3, 1.0)
+HORIZONTAL = (0.4, 1.0)    # velocidade no plano depois / antes, mesma direcao
+BOLA_MORTA_S = 3.0     # bola no chao encerra o rally; o saque seguinte vem bem depois disso
+GINASIO = ((-12.0, 30.0), (-12.0, 21.0), (-1.0, 25.0))  # x, y, z possiveis da bola, em m
 
 Calibracao = namedtuple("Calibracao", "source_id versao K dist H rms_cm space_id largura altura")
 # a quadra marcada no editor do b6, em metros (zonas.py)
 Zona = namedtuple("Zona", "poligono erro_cm versao")
-# altura so precisa ter minimo no contato
-Amostra = namedtuple("Amostra", "t_s ponto_m altura")
 
 
 def calibracao(ev):
@@ -49,48 +57,9 @@ def para_metros(cal, px):
     return tuple(v[:2] / v[2])
 
 
-def px_por_metro(cal, ponto_m):
-    """escala da imagem no ponto do chao, medida ao longo de x
-
-    ponytail: a bola sobe e desce perpendicular a camera, como x; e uma aproximacao da escala
-    vertical que vale perto do chao. trocar pela projecao com os intrinsecos se precisar
-    """
-    H_inv = np.linalg.inv(cal.H)
-    a, b = (H_inv @ np.array([ponto_m[0] + d, ponto_m[1], 1.0]) for d in (-0.5, 0.5))
-    return float(np.hypot(*(a[:2] / a[2] - b[:2] / b[2])))
-
-
-def instante_de_contato(amostras):
-    """acha o instante do quique entre dois quadros, ou None se as amostras nao tem um
-
-    sub-quadro, senao o caso de fronteira some entre dois quadros
-    """
-    # t_s e epoch (~1.8e9): ao quadrado o ajuste perde a precisao, entao vai relativo
-    t0 = amostras[0].t_s
-    ts = np.array([a.t_s - t0 for a in amostras], float)
-    a2, b, _ = np.polyfit(ts, [a.altura for a in amostras], 2)
-    if a2 <= 0:                                       # sem minimo nao ha quique
-        return None
-    tc = float(-b / (2.0 * a2))
-    # vertice fora das amostras e extrapolacao, nao quique: daria ponto a quilometros
-    return t0 + tc if ts[0] <= tc <= ts[-1] else None
-
-
-def ponto_de_contato(amostras, janela=4):
-    """acha o ponto do quique no plano, ou None se nao ha quique nas amostras"""
-    tc = instante_de_contato(amostras)
-    if tc is None:
-        return None
-    # perto do chao a projecao vale, grau dois ajuda
-    perto = sorted(amostras, key=lambda a: abs(a.t_s - tc))[:janela]
-    ts = np.array([a.t_s - tc for a in perto], float)          # relativo, pelo mesmo motivo
-    xy = np.array([a.ponto_m for a in perto], float)
-    return tc, tuple(float(np.polyval(np.polyfit(ts, xy[:, i], 2), 0.0)) for i in (0, 1))
-
-
-def banda_de_duvida_cm(rms_calib_cm, ruido_trilha_cm, vel_ms, erro_t_s, erro_zona_cm=0.0):
-    """junta os erros de i3, do rastro, do tempo e do desenho da zona num sigma"""
-    return float(np.hypot(np.hypot(np.hypot(rms_calib_cm, ruido_trilha_cm), vel_ms * erro_t_s * 100), erro_zona_cm))
+def banda_de_duvida_cm(rms_calib_cm, sigma_contato_cm, erro_zona_cm=0.0):
+    """junta os erros de i3, do ponto de contato (do ajuste) e do desenho da zona num sigma"""
+    return float(np.hypot(np.hypot(rms_calib_cm, sigma_contato_cm), erro_zona_cm))
 
 
 def distancia_cm(ponto, poligono):
@@ -125,48 +94,140 @@ def arbitrar(ponto_m, sigma_cm, source_id, versao, track_id, instante, zona=None
 
 
 class Detector:
-    """acha o quique em cada trilha da bola de uma camera"""
+    """acha o toque da bola no chao numa camera, quadro a quadro
+
+    a bola em jogo e a que voa como projetil: o arco atual fica com o ponto que ele preve, e
+    os pontos soltos (outra bola, falso positivo, bola parada) so viram arco se voarem.
+    """
 
     def __init__(self):
-        self.trilhas = defaultdict(list)
+        self._cam, self._versao = None, None
+        self.zerar()
 
     def zerar(self):
-        """sessao nova: os track_id antigos nao valem mais"""
-        self.trilhas.clear()
+        """sessao nova: os arcos e pontos da anterior nao valem mais"""
+        self.arco, self.anterior, self.soltos, self.morta_ate = None, None, [], -math.inf
 
-    def amostra(self, cal, track_id, t_s, point_px, zona=None, bbox=None):
-        """um quadro da bola, t_s em segundos epoch do captured_at; devolve a decisao
-        quando reconhece um quique, senao None"""
-        if bbox is not None:
-            x1, y1, x2, y2 = bbox
-            if not FORMATO[0] <= (x2 - x1) / max(y2 - y1, 1) <= FORMATO[1]:
-                return None                           # caixa comprida: tenis, nao bola
-        u, v = point_px
-        # ponytail: altura pelo v da imagem (no quique a bola esta mais baixa no quadro);
-        # trocar por altura de verdade se entrar uma segunda camera
-        hist = self.trilhas[track_id]
-        hist.append(Amostra(t_s, para_metros(cal, (u, v)), -v))
-        del hist[:-JANELA]
-        i = min(range(len(hist)), key=lambda k: hist[k].altura)
-        # minimo no meio da janela, com a bola subindo nos ultimos N_SUBIDA quadros
-        if i < N_SUBIDA or len(hist) - 1 - i < N_SUBIDA:
+    def quadro(self, cal, t_s, pontos, zona=None):
+        """pontos: [(track_id, point_px bruto)] da bola neste quadro, t_s em segundos epoch.
+        devolve a decisao quando um contato no chao se confirma, senao None"""
+        if cal.versao != self._versao:
+            self._cam, self._versao = Camera(cal), cal.versao
+            self.zerar()
+        cam = self._cam
+        obs = [(t_s, *cam.pixel(px), tid) for tid, px in pontos]
+        if self.arco is not None and obs:
+            erro, o = min((self.arco.erro_px(t_s, np.array(o[1:3])), o) for o in obs)
+            if erro <= FOLGA * SIGMA_PX:
+                self.arco = Arco(cam, self.arco.obs + [o], partida=self.arco)
+                obs.remove(o)
+        self.soltos = [o for o in self.soltos + obs if t_s - o[0] <= JANELA_S]
+        if self.arco is not None and t_s - self.arco.fim > 2.5 / 30:
+            self.anterior, self.arco = self.arco, None          # sem ponto ha 3 quadros: acabou
+        decisao = None
+        if self.arco is None:
+            novo = self._novo_arco(cam)
+            if novo is not None:
+                if self.anterior is not None and novo.inicio - self.anterior.fim <= VAO_S:
+                    decisao = self._decidir(cal, zona, *contato(self.anterior, novo),
+                                            self.anterior, novo)
+                    self.anterior = None
+                self.arco = novo
+        if self.anterior is not None and t_s - self.anterior.fim > VAO_S:
+            decisao = decisao or self._chegou_ao_chao(cal, zona, self.anterior)
+            self.anterior = None
+        return decisao
+
+    def _novo_arco(self, cam):
+        """o voo mais longo nos pontos soltos: encadeia quadro a quadro e ajusta"""
+        cadeias = []
+        for o in sorted(self.soltos):
+            for c in cadeias:
+                u = c[-1]
+                if 0 < o[0] - u[0] <= 2.5 / 30 and math.hypot(o[1] - u[1], o[2] - u[2]) <= SALTO_PX:
+                    c.append(o)
+                    break
+            else:
+                cadeias.append([o])
+        agora = max((o[0] for o in self.soltos), default=None)
+        for c in sorted(cadeias, key=len, reverse=True):
+            if len(c) < MIN_ARCO:
+                break
+            if c[-1][0] != agora:
+                continue                                         # nao cresceu: ja foi tentada
+            passos = [math.hypot(b[1] - a[1], b[2] - a[2]) for a, b in zip(c, c[1:])]
+            if np.median(passos) < 2:                          # parada nao voa
+                continue
+            if not _parece_parabola(c):
+                continue                                         # mistura de objetos: nem ajusta
+            arco = Arco(cam, c)
+            for _ in range(3):
+                if arco.res.max() <= FOLGA * SIGMA_PX or len(arco.obs) <= MIN_ARCO:
+                    break
+                pior = int(np.argmax(arco.res))                  # ponto previsto, outro objeto
+                arco = Arco(cam, arco.obs[:pior] + arco.obs[pior + 1:])
+            if arco.res.max() <= FOLGA * SIGMA_PX and _plausivel(arco):
+                usados = set(map(id, arco.obs))
+                self.soltos = [o for o in self.soltos if id(o) not in usados]
+                return arco
+        return None
+
+    def _decidir(self, cal, zona, t_c, X, cov, desencontro, a, b):
+        """contato entre dois arcos: chao se a altura cabe em z = 0 e o voo depois e um quique"""
+        if desencontro > 3 * math.sqrt(np.trace(cov)) + 0.3:
+            return None                                          # os arcos nao se encontram
+        t_c, X, cov, v_antes, v_depois = contato_conjunto(self._cam, a, b)
+        if not (v_antes[2] < 0 < v_depois[2]):
+            return None                                          # no chao a bola desce e volta
+        if not quique_possivel(cov, v_antes, v_depois, RESTITUICAO, HORIZONTAL)[0]:
+            return None                                          # mao de jogador, nao chao
+        altura, sigma_z = X[2], math.sqrt(max(cov[2, 2], 0.0))
+        t_c, X, cov, *_ = contato_conjunto(self._cam, a, b, no_chao=True)
+        return self._lance(cal, zona, t_c, X, cov[:3, :3], sigma_z, altura=altura)
+
+    def _chegou_ao_chao(self, cal, zona, a):
+        """arco que desce e some sem outro depois: chao se o fim dele ja esta em z = 0"""
+        t_g = chegada_ao_chao(a)
+        if t_g is None or not (a.fim - 0.05 <= t_g <= a.fim + VAO_S):
             return None
-        antes, fundo, depois = hist[i - N_SUBIDA], hist[i], hist[i + N_SUBIDA]
-        escala = px_por_metro(cal, fundo.ponto_m)
-        descida = (antes.altura - fundo.altura) / (fundo.t_s - antes.t_s) / escala
-        subida = (depois.altura - fundo.altura) / (depois.t_s - fundo.t_s) / escala
-        if descida < DESCIDA_MIN_MS or subida < SUBIDA_MIN_MS:
-            return None                               # parada no chao nao quica
-        # so os quadros em volta do minimo: a janela inteira mistura outros trechos do voo
-        contato = ponto_de_contato(hist[i - N_SUBIDA:i + N_SUBIDA + 1])
-        if contato is None:
+        return self._lance(cal, zona, t_g, a.em(t_g), a.cov_em(a.fim),
+                           math.sqrt(max(a.cov_em(a.fim)[2, 2], 0.0)), altura=a.em(a.fim)[2])
+
+    def _lance(self, cal, zona, t_c, X, cov, sigma_z, altura=None):
+        altura = X[2] if altura is None else altura
+        # o chao (z = 0) tem que caber na incerteza da altura, dos dois lados, o contato nao pode
+        # estar na altura de jogador e tem que ser um lugar do ginasio
+        if not (abs(altura) < 2 * sigma_z + 0.1 and altura < Z_JOGADOR):
             return None
-        tc, ponto = contato
-        vizinhos = hist[i - 1], hist[i + 1]
-        vel = np.hypot(*np.subtract(vizinhos[1].ponto_m, vizinhos[0].ponto_m)) / (
-            vizinhos[1].t_s - vizinhos[0].t_s)
-        sigma = banda_de_duvida_cm(cal.rms_cm, RUIDO_TRILHA_CM, vel, ERRO_T_S, zona.erro_cm if zona else 0.0)
-        hist.clear()                                  # um quique por minimo
-        instante = datetime.fromtimestamp(tc, timezone.utc).isoformat(timespec="milliseconds")
-        return arbitrar(ponto, sigma, cal.source_id, cal.versao, track_id,
-                        instante.replace("+00:00", "Z"), zona)
+        if not all(lo <= v <= hi for v, (lo, hi) in zip(X[:2], GINASIO[:2])):
+            return None
+        if t_c < self.morta_ate:
+            return None                                          # quique seguinte do mesmo rally
+        self.morta_ate = t_c + BOLA_MORTA_S
+        sigma_xy_cm = 100 * math.sqrt(max(np.linalg.eigvalsh(cov[:2, :2]).max(), 0.0))
+        sigma = banda_de_duvida_cm(cal.rms_cm, sigma_xy_cm, zona.erro_cm if zona else 0.0)
+        tid = (self.arco or self.anterior).obs[-1][3] if (self.arco or self.anterior) else None
+        instante = datetime.fromtimestamp(t_c, timezone.utc).isoformat(timespec="milliseconds")
+        return arbitrar((float(X[0]), float(X[1])), sigma, cal.source_id, cal.versao, tid,
+                        instante.replace("+00:00", "Z"), zona) | {"altura_contato_m": round(float(altura), 2)}
+
+
+def _parece_parabola(cadeia, descartes=3):
+    """teste barato antes do ajuste 3D: na imagem, um voo de ate ~1 s e quase uma parabola
+    no tempo. folga larga (a perspectiva entorta um pouco) e os mesmos 3 pontos que o ajuste
+    pode descartar; o que nao passa nisso nao passaria no ajuste 3D"""
+    obs = np.array([o[:3] for o in cadeia])
+    t = obs[:, 0] - obs[0, 0]
+    erro = np.hypot(*(obs[:, k] - np.polyval(np.polyfit(t, obs[:, k], 2), t) for k in (1, 2)))
+    return int((erro > 3 * FOLGA * SIGMA_PX).sum()) <= descartes
+
+
+def _plausivel(arco):
+    """o arco precisa ser um voo possivel dentro do ginasio"""
+    if np.linalg.norm(arco.theta[3:]) > VEL_MAX:
+        return False
+    for t in (arco.inicio, arco.fim):
+        X = arco.em(t)
+        if not all(lo <= v <= hi for v, (lo, hi) in zip(X, GINASIO)):
+            return False
+    return True

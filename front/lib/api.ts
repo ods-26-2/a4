@@ -15,6 +15,7 @@ export interface Decisao {
   source_id: string;
   artifact_version: string; // versao da calibracao que decidiu
   zones_version?: string | null; // versao da zona; null quando valeu a medida oficial
+  clip?: ClipeS4; // replay do lance pelo S4 (ods.s4.clip), quando ja chegou
   origem: "automatica" | "corrigida";
   operador: string | null;
   veredito_automatico: Veredito | null;
@@ -51,6 +52,19 @@ export interface NovaPartida {
 export const criarPartida = (n: NovaPartida) => post<Partida>("/partidas", n);
 export const encerrarPartida = (id: string) => post<Partida>(`/partidas/${id}/encerrar`);
 
+// 6c: o replay da jogada e um clipe do S4; o back pede (ods.s4.capture.command) e o clipe
+// chega no proprio lance. url e null quando o back nao sabe abrir o media_uri do S4
+export interface ClipeS4 {
+  clip_id: string;
+  media_uri: string;
+  url: string | null;
+  start_at: string;
+  end_at: string;
+  expires_at: string;
+}
+
+export const pedirReplay = (id: string) => post<{ pedido: string }>(`/decisoes/${id}/replay`);
+
 // pseudo-P6: a gravacao servida pelo back no lugar do P6 e dos clipes do S4
 export const VIDEO_P6 = `${API}/p6/video`;
 
@@ -73,9 +87,6 @@ export const estadoP6 = async (): Promise<EstadoP6> => {
   return r.json();
 };
 
-// no mock o clip_id vem null e "aviso" explica por que (o S4 ainda nao existe)
-export const pedirReplay = (id: string) =>
-  post<{ clip_id: string | null; aviso?: string }>(`/decisoes/${id}/replay`);
 
 // pan e tilt vao na query, como o back espera
 export interface EstadoCamera {
@@ -106,7 +117,6 @@ export interface Zona {
   poligono_m: [number, number][];
   erro_cm: number;
   aviso?: string;
-  publicado?: boolean;
 }
 
 export interface VersaoZona {

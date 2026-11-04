@@ -5,9 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
+import cena_sintetica as cena
+
 from arbitragem import Calibracao, Detector, Zona, arbitrar, banda_de_duvida_cm, calibracao, distancia_cm
 from kafka_bridge import TOPICO_POSICAO, KafkaBridge, motivo_invalido
-from zonas import (Registro, ZonaInvalida, erro_quadra_cm, mensagem_publicada,
+from zonas import (Registro, ZonaInvalida, erro_quadra_cm,
                    pontos_para_metros, validar_quadra)
 
 # 100 px = 1 m, com a quadra comecando em (100, 100) num quadro de 2000 x 1100
@@ -64,16 +66,16 @@ assert (d["veredito"], d["zones_version"], d["lado"]) == ("dentro", "zones-a4-ca
 
 # o erro do desenho alarga a banda: o que era certo vira duvida
 ponto = (18.3, 4.5)
-assert arbitrar(ponto, banda_de_duvida_cm(1, 3, 0, 0), "cam0", "cal", "t-1", "agora")["veredito"] == "fora"
-assert arbitrar(ponto, banda_de_duvida_cm(1, 3, 0, 0, 20), "cam0", "cal", "t-1", "agora")["veredito"] == "duvida"
+assert arbitrar(ponto, banda_de_duvida_cm(1, 3), "cam0", "cal", "t-1", "agora")["veredito"] == "fora"
+assert arbitrar(ponto, banda_de_duvida_cm(1, 3, 20), "cam0", "cal", "t-1", "agora")["veredito"] == "duvida"
 
-# quique vindo do s1, passando pela zona
+# quique vindo do s1, passando pela zona (camera e voo sinteticos, chao em (12, 4.5))
 detector, decisao = Detector(), None
-for i in range(15):
-    t = i / 30
-    # bola em x ate 17 m; a altura minima (v maior na imagem) fica no meio da janela
-    px = (100 + 1700, 550 + 200 - abs(i - 7) * 30)  # 9 m/s, acima de A4_DESCIDA_MIN_MS
-    decisao = detector.amostra(CAL, "t-9", 1000 + t, px, Zona(poligono, 5.0, "zones-a4-cam0-1")) or decisao
+cal_cena = calibracao(cena.envelope())
+pontos = dict((round(t * cena.FPS), px) for t, px in cena.pixels(cena.quique((12.0, 4.5), (6.0, 1.0, -9.0))))
+for n in range(min(pontos), max(pontos) + 30):
+    pts = [("t-9", pontos[n])] if n in pontos else []
+    decisao = detector.quadro(cal_cena, 1000 + n / cena.FPS, pts, Zona(poligono, 5.0, "zones-a4-cam0-1")) or decisao
 assert decisao and decisao["zones_version"] == "zones-a4-cam0-1" and decisao["veredito"] == "dentro", decisao
 
 # registro: hash confere, versao sobe e volta depois de reiniciar
@@ -92,9 +94,6 @@ with tempfile.TemporaryDirectory() as raiz:
     outro.carregar()
     assert outro.atual("cam0").versao == "zones-a4-cam0-2"
 
-    mensagem = mensagem_publicada(descritor)
-    assert motivo_invalido(mensagem, "ods.artifact.published") is None
-    assert mensagem["payload"]["kind"] == "ZONES" and mensagem["producer"] == "A4"
 
 # validacao e mensagem repetida no consumidor
 assert "ausente" in motivo_invalido({"schema": TOPICO_POSICAO}, TOPICO_POSICAO)
@@ -104,7 +103,7 @@ assert motivo_invalido(base, TOPICO_POSICAO) is None
 assert "versão" in motivo_invalido(base | {"schema_version": "2.0"}, TOPICO_POSICAO)
 assert "schema" in motivo_invalido(base, "ods.i3.calibration")
 recebidas = []
-ponte = KafkaBridge(lambda d: None, ao_receber_posicao=recebidas.append)
+ponte = KafkaBridge(ao_receber_posicao=recebidas.append)
 ponte._tratar_contrato(TOPICO_POSICAO, base)
 ponte._tratar_contrato(TOPICO_POSICAO, base)
 ponte._tratar_contrato(TOPICO_POSICAO, base | {"message_id": "m2", "schema_version": "2.0"})

@@ -1,15 +1,15 @@
 """python test_rastros.py -- posicao da bola do s1 vira lance na partida aberta da camera
 
-complementa o test_integracao_s1.py: instante sub-quadro, quique lento, outra camera e
-sessao nova no meio do quique
+o caminho do main: calibracao do i3, ods.s1.position por quadro, sessao nova no meio do voo,
+outra camera e toque de jogador; a cena e a camera sintetica de cena_sintetica.py
 """
 import uuid
 from datetime import datetime, timezone
 
+import cena_sintetica as cena
 import main
 
 T0 = datetime(2026, 10, 21, 13, 0, tzinfo=timezone.utc).timestamp()   # epoch, como no barramento
-TC = T0 + 0.512                                     # quique entre dois quadros
 
 
 def iso(t):
@@ -21,52 +21,47 @@ def epoch(texto):
     return datetime.fromisoformat(texto.replace("Z", "+00:00")).timestamp()
 
 
-def quadro(n, fonte="cam0", curva=10000):
-    """ods.s1.position com a bola a 10 m/s em x; na imagem desce ate v = 450 no quique e sobe
-    de novo, a ~10 m/s com curva 10000 (1 px = 1 cm); curva 2000 e ~4 m/s, o sacador quicando"""
-    t = T0 + n / 30
-    u, v = 1200 + 1000 * (t - TC), 450 - curva * (t - TC) ** 2
-    return {"message_id": str(uuid.uuid4()), "schema": "ods.s1.position", "source_id": fonte,
-            "session_id": "s-1", "captured_at": iso(t),
-            "payload": {"frame_index": n, "positions": [
-                {"track_id": "t-ball-0001", "class": "ball", "point_px": [u, v]}]}}
+def envelopes(pontos, fonte="cam0", sessao="s-1"):
+    """ods.s1.position de cada quadro, com bola ou sem, ate 1 s depois do ultimo ponto"""
+    por_n = {round(t * cena.FPS): px for t, px in pontos}
+    for n in range(min(por_n), max(por_n) + int(cena.FPS)):
+        posicoes = [{"track_id": "t-ball-0001", "class": "ball", "point_px": list(por_n[n])}] if n in por_n else []
+        yield {"message_id": str(uuid.uuid4()), "schema": "ods.s1.position", "source_id": fonte,
+               "session_id": sessao, "captured_at": iso(T0 + n / cena.FPS),
+               "payload": {"frame_index": n, "positions": posicoes}}
 
 
-def lances(p, quadros):
+def lances(p, evs):
     antes = len(p["decisoes"])
-    for ev in quadros:
+    for ev in evs:
         main.receber_posicao(ev)
     return p["decisoes"][antes:]
 
 
+QUIQUE = cena.pixels(cena.quique((12.0, 4.5), (6.0, 1.0, -9.0)))     # chao em t = 1 s
+main.partidas.clear()
 p = main.nova_partida(source_id="cam0")
-quique = [quadro(n) for n in range(31)]             # 1 s de bola, quique no quadro ~15
+assert lances(p, envelopes(QUIQUE)) == [], "sem calibracao do i3 nao pode sair lance"
 
-assert lances(p, quique) == [], "sem calibracao do i3 nao pode sair lance"
-
-# homografia simples: 1 px = 1 cm, entao o quique cai em (12, 4.5) m, lado B
-main.receber_calibracao({
-    "source_id": "cam0", "artifact_version": "cal-cam0-1", "payload": {
-        "image_width": 1280, "image_height": 720, "reference_frame": {"space_id": "quadra-1"},
-        "intrinsics": {"fx": 1000, "fy": 1000, "cx": 640, "cy": 360},
-        "distortion": [0, 0, 0, 0, 0], "reprojection_rms_cm": 4.0,
-        "homography_px_to_m": [[0.01, 0, 0], [0, 0.01, 0], [0, 0, 1]]}})
-(d,) = lances(p, quique)
+main.receber_calibracao(cena.envelope())
+(d,) = lances(main.nova_partida(source_id="cam0"), envelopes(QUIQUE, sessao="s-2"))
 assert (d["veredito"], d["lado"], d["artifact_version"]) == ("dentro", "B", "cal-cam0-1"), d
-assert abs(d["position_m"][0] - 12) < 0.05 and abs(d["position_m"][1] - 4.5) < 0.05, d
-assert abs(epoch(d["instante"]) - TC) < 0.005, "instante do quique tem que ser sub-quadro"
+assert abs(d["position_m"][0] - 12) < 0.15 and abs(d["position_m"][1] - 4.5) < 0.15, d
+assert abs(epoch(d["instante"]) - (T0 + 1.0)) < 0.02, "instante do quique tem que ser sub-quadro"
 
-assert lances(p, [quadro(n, curva=2000) for n in range(31)]) == [], \
-    "quique lento (bola parada, sacador quicando) nao pode virar lance"
+manchete = cena.pixels(cena.toque((5.0, 4.0, 1.0), (4.0, 0.5, -6.0), (2.0, 0.0, 7.0)))
+assert lances(main.nova_partida(source_id="cam0"), envelopes(manchete, sessao="s-3")) == [], \
+    "toque de jogador no ar nao pode virar lance"
 
-assert lances(main.nova_partida(source_id="cam0"), [quadro(n, fonte="cam9") for n in range(31)]) == [], \
+assert lances(main.nova_partida(source_id="cam0"), envelopes(QUIQUE, fonte="cam9", sessao="s-4")) == [], \
     "posicao de outra camera nao pode cair nesta partida"
 
-# sessao nova no meio do quique: os track_id antigos nao valem, o quique nao fecha
+# sessao nova no meio do voo: o que veio antes nao vale, o quique nao fecha
 p = main.nova_partida(source_id="cam0")
-lances(p, quique[:14])
-main.receber_sessao({"session_id": "s-2", "published_at": iso(TC), "payload": {"sources": ["cam0"], "started_at": iso(T0)}})
+evs = list(envelopes(QUIQUE, sessao="s-5"))
+lances(p, evs[:20])
+main.receber_sessao({"session_id": "s-6", "published_at": iso(T0), "payload": {"sources": ["cam0"], "started_at": iso(T0)}})
 assert main.estado_p6()["sessao"]["started_at"] == iso(T0)
-assert lances(p, quique[14:]) == [], "ods.session.started tem que zerar o quique em andamento"
+assert lances(p, evs[20:]) == [], "ods.session.started tem que zerar o voo em andamento"
 
 print("rastros ok")

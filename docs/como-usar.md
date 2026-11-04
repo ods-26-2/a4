@@ -107,8 +107,9 @@ arquitetura 6c). Mudança aqui precisa ser combinada entre back e front.
 | POST | `/partidas/{id}/encerrar` | encerrar; o mock para de inventar lances | Partida |
 | POST | `/decisoes/{id}/correcao` | árbitro troca o veredito `{ veredito, operador }` | Decisao |
 | POST | `/pontos/{id}/desfazer` | anula o lance; ele deixa de contar no placar | Partida |
-| POST | `/decisoes/{id}/replay` | pedir o clipe do lance ao S4 (ainda não ligado: devolve `clip_id: null`) | `{ clip_id }` |
-| POST | `/camera/enquadrar?pan_deg=&tilt_deg=` | apontar a câmera pelo P7 (ainda não ligado: só ecoa) | `{ status, pan_deg, tilt_deg }` |
+| GET | `/p6/video` | a gravação que o player toca (com suporte a Range) | vídeo |
+| GET | `/p6` | qual vídeo o back serve e a sessão de replay em curso | `{ video, sessao }` |
+| POST | `/camera/enquadrar?pan_deg=&tilt_deg=` | apontar a câmera: publica `ods.p7.move.command` (precisa do Kafka) | `{ command_id, aviso }` |
 | GET | `/eventos?partida={id}` | SSE: evento `partida` com a Partida inteira a cada mudança | `text/event-stream` |
 
 ### Decisao
@@ -199,7 +200,7 @@ uvicorn main:app --reload --port 8000
 
 No PowerShell, use `$env:A4_KAFKA_ENABLED="true"`, `$env:A4_KAFKA_BOOTSTRAP_SERVERS="34.66.235.91:9093"` e `$env:A4_MODO_DEMO="false"` antes de iniciar o Uvicorn. As variáveis devem ser definidas no terminal do backend.
 
-O A4 publica comandos de câmera em `ods.p7.move.command` usando um envelope com `message_type: "command"`, `schema: "ods.p7.move.command"` e `payload.pan_deg`/`payload.tilt_deg`. Ele consome `ods.p7.state` para atualizar a posição mostrada na interface e `ods.regra.evento_consolidado` para receber decisões automáticas. O evento de regra deve conter `payload.veredito` (`dentro`, `fora` ou `duvida`) e `payload.lado` (`A` ou `B`); também são aceitos os aliases `verdict`, `side`, `decision` e `decisao`.
+O A4 publica comandos de câmera em `ods.p7.move.command` usando um envelope com `message_type: "command"`, `schema: "ods.p7.move.command"` e `payload.pan_deg`/`payload.tilt_deg`. Ele consome `ods.p7.state` para atualizar a posição mostrada na interface. O lance automático não vem de outro componente: na 6c quem decide é o próprio A4, a partir de `ods.s1.position` e `ods.i3.calibration`.
 
 Endpoints úteis:
 
@@ -225,7 +226,7 @@ python test_zonas.py
 A linha que decide dentro ou fora vem de uma zona marcada no editor do B6. Sem zona salva, vale a medida oficial de 18 × 9 m, e a decisão sai com `zones_version: null`.
 
 ```
-aba Gestão (editor do B6) → POST /zonas → artefato ZONES em metros + ods.artifact.published
+aba Gestão (editor do B6) → POST /zonas → quadra em metros, no formato ZONES, no registro local
                                                                  ↓
 back do A4 (regra de dentro ou fora) ← ods.s1.position ← S1
 ```
@@ -255,9 +256,9 @@ O `POST` responde 409 sem calibração e 422 quando o desenho não é um quadril
 
 ### Artefatos e S1
 
-As versões ficam em `back/artefatos/a4/zones/<versao>/`, com `content.json` e `descriptor.json`. A pasta muda com `A4_ARTEFATOS_DIR` e é a que o S1 precisa receber em `S1_REGISTRY_DIR`. O S1 acompanha o `artifact_id` `zones-a4-<camera>`, então configure `S1_ZONES_FILE` e `S1_ZONES_VERSION` com uma versão salva. Ele só aplica uma versão nova na próxima sessão.
+As versões ficam em `back/artefatos/a4/zones/<versao>/`, com `content.json` e `descriptor.json` (descritor comum da 6c), na pasta de `A4_ARTEFATOS_DIR`. Uma versão salva nunca muda; desenhar de novo ou voltar uma antiga cria outra.
 
-O A4 ainda não consta como produtor de `ZONES` na tabela de artefatos da 6c (A3, A5 e A8). Isso precisa ser combinado com a TRA-1 e a VER-6.
+Decisão: a quadra é configuração do próprio A4, a linha da regra de dentro e fora. Na matriz de artefatos da 6c o A4 consome MODEL e CALIBRATION e não produz ZONES, então a versão não é anunciada em `ods.artifact.published`. O S1 da câmera do A4 precisa de um arquivo de zonas para rodar; na implantação ele recebe uma versão salva daqui (`S1_ZONES_FILE`, `S1_ZONES_VERSION` e `S1_REGISTRY_DIR` apontando para esta pasta). O A4 não depende disso: a regra lê a zona direto, sem `zone_ids`.
 
 ### Escolher a zona
 
@@ -265,9 +266,9 @@ Abaixo do editor ficam as zonas salvas da câmera. "Usar esta" volta uma zona an
 
 ---
 
-## 7. Pseudo-P6, sem Kafka nem Docker
+## 7. Vídeo e replay
 
-Enquanto o P6 da TRA-2 não serve vídeo, o back serve uma gravação em `GET /p6/video` e o painel "Replay e câmera" toca ela em laço, como se fosse a câmera ao vivo. Na 6c o vídeo fica fora do barramento, então nada disso passa pelo Kafka.
+O back serve uma gravação em `GET /p6/video` e o painel "Replay e câmera" toca ela em laço, como se fosse a câmera ao vivo. Na 6c o vídeo fica fora do barramento, então nada disso passa pelo Kafka.
 
 ```
 cd back && A4_CALIBRACAO_ARQUIVO=../old/yolo/calibracao-cam0.json .venv/bin/uvicorn main:app --port 8000
@@ -275,7 +276,7 @@ cd front && npm run dev
 ```
 
 - **Vídeo:** `old/yolo/clipe.mp4` por padrão; outro `.mp4` com `A4_P6_VIDEO`.
-- **Replay do lance:** volta o vídeo para 3 s antes do lance, toca 5 s e volta ao ao vivo. O instante do lance vira posição do vídeo pelo relógio que a tela guarda enquanto está aberta, então lance de antes de abrir a tela não tem replay. Os lances do modo demo são sorteados; o replay mostra o que o vídeo exibia naquela hora.
+- **Replay do lance, sem barramento:** volta o vídeo para 3 s antes do lance, toca 5 s e volta ao ao vivo. O instante do lance vira posição do vídeo pelo relógio que a tela guarda enquanto está aberta, então lance de antes de abrir a tela não tem replay. Os lances do modo demo são sorteados; o replay mostra o que o vídeo exibia naquela hora.
 - **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração vem de `old/yolo/calibracao-cam0.json`, saída do I3 para esse clipe (`main.py --source-id cam0 < dados/pontos_quadra.csv`).
 
 ### Com o barramento
@@ -283,6 +284,5 @@ cd front && npm run dev
 Com a cadeia ligada (`sim/README.md`: câmera simulada → I1 → I2 → S1 → back com `A4_KAFKA_ENABLED=true` e `A4_MODO_DEMO=false`), o `A4_P6_VIDEO` aponta para o mesmo vídeo que a câmera toca, e o player segue a sessão dela:
 
 - **Ao vivo:** o back guarda o último `ods.session.started` (lido do começo do tópico, como a calibração) e `GET /p6` devolve a sessão e qual vídeo serve. O player toca no mesmo ponto que a câmera e corrige se escorregar mais de 1 s; se o vídeo do back mudar, o player recarrega.
-- **Replay:** o lance cai em `instante - started_at` no vídeo, exato, mesmo para lance de antes de abrir a tela.
-
-Quando o P6 e o S4 entrarem, o player passa a tocar o stream do P6 e o replay vira o clipe de `ods.s4.clip`, pedido por `ods.s4.capture.command` (6c, A4).
+- **Replay do lance (6c):** "Replay do lance" publica `ods.s4.capture.command` (`CLIP`, de 3 s antes a 2 s depois do lance, na câmera do lance). O `ods.s4.clip` que volta com o `correlation_id` do pedido entra no lance (`clip`), e o player toca o clipe. O `media_uri` do S4 (`s4://<caminho>`) vira `A4_S4_MEDIA_URL/<caminho>`; sem essa base, ou enquanto o clipe não chega, o replay salta na gravação: o lance cai em `instante - started_at`, exato, mesmo para lance de antes de abrir a tela.
+- **Câmera P7:** `POST /camera/enquadrar` publica `ods.p7.move.command` com o mecanismo `A4_P7_SOURCE_ID` (padrão `pt0`), pan de -90 a 90° e tilt de -45 a 45° (faixas da 6c); a posição mostrada vem de `ods.p7.state` desse mecanismo.

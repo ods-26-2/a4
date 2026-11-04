@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { VIDEO_P6, enquadrar, estadoCamera, estadoP6, type Decisao, type SessaoP6 } from "@/lib/api";
+import { VIDEO_P6, enquadrar, estadoCamera, estadoP6, pedirReplay, type Decisao, type SessaoP6 } from "@/lib/api";
 import s from "./ReplayCamera.module.css";
 
 const PASSO_GRAUS = 5;
@@ -13,10 +13,10 @@ const MARCAS = 600; // ~2 min de relogio do ao vivo, a 4-5 timeupdate por segund
  * Câmera ao vivo, replay do lance e enquadramento P7. Os ângulos exibidos vêm do estado real
  * de ods.p7.state.
  *
- * ponytail: o vídeo é o pseudo-P6 (uma gravação em laço servida pelo back) e o replay é um
- * salto nela. Com o barramento, o player segue a sessão da câmera (ods.session.started) e o
- * lance cai em instante - started_at; sem ele, pelo relógio guardado enquanto a tela está
- * aberta. Sai quando o replay for o clipe do S4 (ods.s4.clip).
+ * O vídeo é a gravação que a câmera do jogo toca, servida pelo back, e o replay é um salto
+ * nela. Com o barramento, o player segue a sessão da câmera (ods.session.started) e o lance
+ * cai em instante - started_at, exato; sem ele, pelo relógio guardado enquanto a tela está
+ * aberta.
  */
 export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefined; aviso: (t: string) => void }) {
   const video = useRef<HTMLVideoElement>(null);
@@ -27,6 +27,8 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   const [modo, setModo] = useState<"ao vivo" | "replay">("ao vivo");
   const [gravacao, setGravacao] = useState<string | null>(null);
   const [falhou, setFalhou] = useState<string | null>(null); // gravacao que o navegador nao abriu
+  const [clipe, setClipe] = useState<string | null>(null); // url do clipe do S4 tocando
+  const pedidos = useRef(new Set<string>()); // lances ja pedidos ao S4
   const semVideo = !gravacao || falhou === gravacao;
   const [angulo, setAngulo] = useState({ pan: 0, tilt: 0 });
   const [status, setStatus] = useState("Consultando estado do P7…");
@@ -87,6 +89,18 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   function replay() {
     const v = video.current;
     if (!lance) return aviso("Ainda não há lance para rever");
+    // 6c: o replay e o clipe do S4. se ja chegou, toca ele; senao pede (uma vez) e, ate chegar,
+    // salta na gravacao que ja toca
+    if (lance.clip?.url) {
+      aoVivo.current = false;
+      clearTimeout(fimReplay.current);
+      setModo("replay");
+      return setClipe(lance.clip.url);
+    }
+    if (!pedidos.current.has(lance.decisao_id)) {
+      pedidos.current.add(lance.decisao_id);
+      pedirReplay(lance.decisao_id).catch(() => pedidos.current.delete(lance.decisao_id));
+    }
     if (!v || semVideo) return aviso("Pseudo-P6 sem vídeo");
     const alvo = Date.parse(lance.instante);
     const marca = relogio.current.findLast(([t]) => t <= alvo);
@@ -128,9 +142,11 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
         <div className={s.video}>{gravacao ? "Pseudo-P6 sem vídeo. Confira A4_P6_VIDEO no back." : "Carregando o vídeo…"}</div>
       ) : (
         <div className={s.tela}>
-          <video ref={video} src={`${VIDEO_P6}?gravacao=${encodeURIComponent(gravacao)}`} autoPlay muted loop playsInline onTimeUpdate={marcar}
-            onError={() => setFalhou(gravacao)} />
-          <span className={`${s.selo} ${modo === "replay" ? s.replay : ""}`}>{modo}</span>
+          <video ref={video} src={clipe ?? `${VIDEO_P6}?gravacao=${encodeURIComponent(gravacao)}`} autoPlay muted
+            loop={!clipe} playsInline onTimeUpdate={marcar}
+            onEnded={() => { if (clipe) { setClipe(null); aoVivo.current = true; setModo("ao vivo"); } }}
+            onError={() => { if (clipe) { setClipe(null); aoVivo.current = true; setModo("ao vivo"); aviso("O clipe do S4 não abriu; replay na gravação"); } else setFalhou(gravacao); }} />
+          <span className={`${s.selo} ${modo === "replay" ? s.replay : ""}`}>{clipe ? "replay · S4" : modo}</span>
         </div>
       )}
       <div>
