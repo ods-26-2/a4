@@ -15,11 +15,12 @@ import random
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from arbitragem import Detector, calibracao
@@ -35,6 +36,9 @@ MODO_DEMO = os.getenv("A4_MODO_DEMO", "true").lower() in {"1", "true", "yes", "s
 KAFKA_HABILITADO = os.getenv("A4_KAFKA_ENABLED", "false").lower() in {"1", "true", "yes", "sim"}
 VEREDITOS = ("dentro", "fora", "duvida")
 CALIBRACAO_ARQUIVO = os.getenv("A4_CALIBRACAO_ARQUIVO")
+# ponytail: pseudo-P6, uma gravação em arquivo no lugar do P6 da TRA-2 e dos clipes do S4;
+# sai quando o P6 servir o stream e o replay vier de ods.s4.clip
+P6_VIDEO = Path(os.getenv("A4_P6_VIDEO") or Path(__file__).parent.parent / "old" / "yolo" / "clipe.mp4")
 
 partidas: dict[str, dict[str, Any]] = {}
 kafka: KafkaBridge | None = None
@@ -311,6 +315,14 @@ def desfazer(did: str):
     return visao(p)
 
 
+@app.get("/p6/video")
+def video_p6():
+    """Pseudo-P6: a gravação para o player do A4. Na 6c o vídeo fica fora do barramento."""
+    if not P6_VIDEO.is_file():
+        raise HTTPException(404, f"Pseudo-P6 sem vídeo: {P6_VIDEO} não existe. Aponte A4_P6_VIDEO para um .mp4.")
+    return FileResponse(P6_VIDEO, media_type="video/mp4")
+
+
 @app.post("/decisoes/{did}/replay")
 def replay(did: str):
     buscar_decisao(did)
@@ -343,7 +355,8 @@ def enquadrar(pan_deg: float = 0.0, tilt_deg: float = 0.0):
 @app.get("/zonas/{source_id}")
 def ler_zona(source_id: str):
     cal = calibracoes.get(source_id)
-    return {"calibracao": cal.versao if cal else None, "zona": registro.resumo(source_id)}
+    return {"calibracao": cal.versao if cal else None, "zona": registro.resumo(source_id),
+            "versoes": registro.versoes(source_id)}
 
 
 @app.post("/zonas")
@@ -358,6 +371,23 @@ def salvar_zona(corpo: NovaZona):
         validar_quadra(poligono)
     except ZonaInvalida as exc:
         raise HTTPException(422, str(exc)) from exc
+    return gravar_zona(cal, poligono)
+
+
+@app.post("/zonas/{source_id}/{versao}/usar")
+def usar_zona(source_id: str, versao: str):
+    """Volta uma zona antiga como versão nova: a mais nova continua sendo a que vale para a
+    regra, para o S1 e depois de reiniciar o back."""
+    cal = calibracoes.get(source_id)
+    if cal is None:
+        raise HTTPException(409, f"Sem calibração do I3 para {source_id}; não dá para publicar a zona.")
+    antiga = next((v for v in registro.versoes(source_id) if v["artifact_version"] == versao), None)
+    if antiga is None:
+        raise HTTPException(404, f"zona {versao} nao existe para {source_id}")
+    return gravar_zona(cal, [tuple(p) for p in antiga["poligono_m"]])
+
+
+def gravar_zona(cal, poligono):
     descritor = registro.salvar(cal, poligono)
     avisos = ["Vale para os próximos lances. O S1 só aplica uma versão nova na próxima sessão."]
     erro_cm = erro_quadra_cm(poligono)
@@ -373,7 +403,7 @@ def salvar_zona(corpo: NovaZona):
             avisos.insert(0, f"Zona salva, mas não anunciada no barramento: {exc}")
     else:
         avisos.append("Kafka desligado: a zona foi salva, mas não foi anunciada ao S1.")
-    return registro.resumo(corpo.source_id) | {"aviso": " ".join(avisos), "publicado": publicado}
+    return registro.resumo(cal.source_id) | {"aviso": " ".join(avisos), "publicado": publicado}
 
 
 @app.get("/eventos")

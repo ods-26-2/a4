@@ -258,3 +258,24 @@ O `POST` responde 409 sem calibração e 422 quando o desenho não é um quadril
 As versões ficam em `back/artefatos/a4/zones/<versao>/`, com `content.json` e `descriptor.json`. A pasta muda com `A4_ARTEFATOS_DIR` e é a que o S1 precisa receber em `S1_REGISTRY_DIR`. O S1 acompanha o `artifact_id` `zones-a4-<camera>`, então configure `S1_ZONES_FILE` e `S1_ZONES_VERSION` com uma versão salva. Ele só aplica uma versão nova na próxima sessão.
 
 O A4 ainda não consta como produtor de `ZONES` na tabela de artefatos da 6c (A3, A5 e A8). Isso precisa ser combinado com a TRA-1 e a VER-6.
+
+### Escolher a zona
+
+Abaixo do editor ficam as zonas salvas da câmera. "Usar esta" volta uma zona antiga gravando uma versão nova com o mesmo desenho (`POST /zonas/{source_id}/{versao}/usar`): a mais nova continua sendo a que vale para a regra, para o S1 e depois de reiniciar o back.
+
+---
+
+## 7. Pseudo-P6, sem Kafka nem Docker
+
+Enquanto o P6 da TRA-2 não serve vídeo, o back serve uma gravação em `GET /p6/video` e o painel "Replay e câmera" toca ela em laço, como se fosse a câmera ao vivo. Na 6c o vídeo fica fora do barramento, então nada disso passa pelo Kafka.
+
+```
+cd back && A4_CALIBRACAO_ARQUIVO=../old/yolo/calibracao-cam0.json .venv/bin/uvicorn main:app --port 8000
+cd front && npm run dev
+```
+
+- **Vídeo:** `old/yolo/clipe.mp4` por padrão; outro `.mp4` com `A4_P6_VIDEO`.
+- **Replay do lance:** volta o vídeo para 3 s antes do lance, toca 5 s e volta ao ao vivo. O instante do lance vira posição do vídeo pelo relógio que a tela guarda enquanto está aberta, então lance de antes de abrir a tela não tem replay. Os lances do modo demo são sorteados; o replay mostra o que o vídeo exibia naquela hora.
+- **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração vem de `old/yolo/calibracao-cam0.json`, saída do I3 para esse clipe (`main.py --source-id cam0 < dados/pontos_quadra.csv`).
+
+Quando o P6 e o S4 entrarem, o player passa a tocar o stream do P6 e o replay vira o clipe de `ods.s4.clip`, pedido por `ods.s4.capture.command` (6c, A4).

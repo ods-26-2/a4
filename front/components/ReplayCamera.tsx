@@ -1,14 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { enquadrar, estadoCamera, pedirReplay, type Decisao } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { VIDEO_P6, enquadrar, estadoCamera, type Decisao } from "@/lib/api";
 import s from "./ReplayCamera.module.css";
 
 const PASSO_GRAUS = 5;
+const ANTES_S = 3; // replay: o lance e os segundos antes dele
+const DEPOIS_S = 2;
+const MARCAS = 600; // ~2 min de relogio do ao vivo, a 4-5 timeupdate por segundo
 
-/** Replay do lance e enquadramento P7. Os ângulos exibidos vêm do estado real de ods.p7.state. */
+/**
+ * Câmera ao vivo, replay do lance e enquadramento P7. Os ângulos exibidos vêm do estado real
+ * de ods.p7.state.
+ *
+ * ponytail: o vídeo é o pseudo-P6 (uma gravação em laço servida pelo back) e o replay é um
+ * salto nela: o instante do lance vira posição do vídeo pelo relógio guardado enquanto a tela
+ * está aberta. Sai quando o replay for o clipe do S4 (ods.s4.clip).
+ */
 export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefined; aviso: (t: string) => void }) {
-  const [clipe, setClipe] = useState("Peça o replay para ver o clipe do lance aqui.");
+  const video = useRef<HTMLVideoElement>(null);
+  const relogio = useRef<[number, number][]>([]); // [Date.now(), currentTime] do ao vivo
+  const aoVivo = useRef(true);
+  const fimReplay = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [modo, setModo] = useState<"ao vivo" | "replay" | "sem vídeo">("ao vivo");
   const [angulo, setAngulo] = useState({ pan: 0, tilt: 0 });
   const [status, setStatus] = useState("Consultando estado do P7…");
   const [p7Disponivel, setP7Disponivel] = useState(false);
@@ -41,18 +55,36 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
     return () => {
       ativo = false;
       if (timer) clearTimeout(timer);
+      clearTimeout(fimReplay.current);
     };
   }, []);
 
-  async function replay() {
+  function marcar() {
+    const v = video.current;
+    if (!v || !aoVivo.current) return;
+    relogio.current.push([Date.now(), v.currentTime]);
+    if (relogio.current.length > MARCAS) relogio.current.shift();
+  }
+
+  function replay() {
+    const v = video.current;
     if (!lance) return aviso("Ainda não há lance para rever");
-    setClipe("Pedindo o clipe ao S4…");
-    try {
-      const r = await pedirReplay(lance.decisao_id);
-      setClipe(r.clip_id ? `Clipe ${r.clip_id} pronto` : (r.aviso ?? "Clipe indisponível"));
-    } catch (e) {
-      setClipe(String(e));
-    }
+    if (!v || modo === "sem vídeo") return aviso("Pseudo-P6 sem vídeo");
+    const alvo = Date.parse(lance.instante);
+    const marca = relogio.current.findLast(([t]) => t <= alvo);
+    if (!marca) return aviso("Esse lance é de antes desta tela abrir o vídeo; não há gravação dele");
+    const instante = (marca[1] + (alvo - marca[0]) / 1000) % v.duration;
+    const volta = { t: Date.now(), pos: v.currentTime };
+    aoVivo.current = false;
+    setModo("replay");
+    v.currentTime = Math.max(0, instante - ANTES_S);
+    clearTimeout(fimReplay.current);
+    fimReplay.current = setTimeout(() => {
+      // volta para onde o ao vivo estaria se não tivesse parado
+      v.currentTime = (volta.pos + (Date.now() - volta.t) / 1000) % v.duration;
+      aoVivo.current = true;
+      setModo("ao vivo");
+    }, (ANTES_S + DEPOIS_S) * 1000);
   }
 
   async function mover(dPan: number, dTilt: number, centralizar = false) {
@@ -72,7 +104,15 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   return (
     <section className="painel" aria-label="Replay e câmera">
       <h2>Replay e câmera</h2>
-      <div className={s.video}>{clipe}</div>
+      {modo === "sem vídeo" ? (
+        <div className={s.video}>Pseudo-P6 sem vídeo. Confira A4_P6_VIDEO no back.</div>
+      ) : (
+        <div className={s.tela}>
+          <video ref={video} src={VIDEO_P6} autoPlay muted loop playsInline onTimeUpdate={marcar}
+            onError={() => setModo("sem vídeo")} />
+          <span className={`${s.selo} ${modo === "replay" ? s.replay : ""}`}>{modo}</span>
+        </div>
+      )}
       <div>
         <button className="botao pri" onClick={replay}>Replay do lance</button>
       </div>

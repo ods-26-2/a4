@@ -82,6 +82,8 @@ with tempfile.TemporaryDirectory() as raiz:
     descritor = registro.salvar(CAL, poligono)
     assert descritor["artifact_version"] == "zones-a4-cam0-1", descritor
     assert registro.salvar(CAL, poligono)["artifact_version"] == "zones-a4-cam0-2"
+    assert [v["artifact_version"] for v in registro.versoes("cam0")] == ["zones-a4-cam0-2", "zones-a4-cam0-1"]
+    assert registro.versoes("cam1") == []
     conteudo = json.loads((Path(raiz) / "a4/zones/zones-a4-cam0-1/content.json").read_text(encoding="utf-8"))
     assert (conteudo["coordinates"], conteudo["space_id"], conteudo["source_ids"]) == ("METERS", "quadra-1", ["cam0"])
     assert conteudo["zones"][0]["polygon"][1] == [18.0, 0.0], conteudo

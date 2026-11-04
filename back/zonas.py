@@ -133,6 +133,19 @@ class Registro:
         return {"artifact_version": descritor["artifact_version"],
                 "poligono_m": conteudo["zones"][0]["polygon"], "erro_cm": round(zona.erro_cm, 1)}
 
+    def versoes(self, source_id):
+        """versoes salvas da camera, da mais nova para a mais velha"""
+        saida = []
+        for arquivo in (self.raiz / "a4" / "zones").glob(f"zones-a4-{source_id}-*/descriptor.json"):
+            descritor = json.loads(arquivo.read_text(encoding="utf-8"))
+            conteudo = json.loads((self.raiz / descritor["uri"].removeprefix("registry://")).read_bytes())
+            if conteudo["source_ids"] != [source_id]:
+                continue                              # zones-a4-cam0-* pega tambem a cam0-x
+            poligono = conteudo["zones"][0]["polygon"]
+            saida.append({"artifact_version": descritor["artifact_version"], "valid_from": descritor["valid_from"],
+                          "poligono_m": poligono, "erro_cm": round(erro_quadra_cm(poligono), 1)})
+        return sorted(saida, key=lambda v: _numero(v["artifact_version"]), reverse=True)
+
     def salvar(self, cal, poligono):
         """grava uma versao nova; devolve o descritor"""
         artifact_id = f"zones-a4-{cal.source_id}"

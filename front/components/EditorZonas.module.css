@@ -6,3 +6,5 @@
 .alerta { background: var(--duvida-bg); border: 1px solid var(--duvida); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
 .linha { display: flex; flex-wrap: wrap; gap: 10px; }
 .resumo { display: grid; gap: 8px; }
+.versoes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.versoes li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; font-size: 14px; border-top: 1px solid var(--line); padding-top: 6px; }

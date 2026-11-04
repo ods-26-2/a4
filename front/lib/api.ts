@@ -51,6 +51,9 @@ export interface NovaPartida {
 export const criarPartida = (n: NovaPartida) => post<Partida>("/partidas", n);
 export const encerrarPartida = (id: string) => post<Partida>(`/partidas/${id}/encerrar`);
 
+// pseudo-P6: a gravacao servida pelo back no lugar do P6 e dos clipes do S4
+export const VIDEO_P6 = `${API}/p6/video`;
+
 // no mock o clip_id vem null e "aviso" explica por que (o S4 ainda nao existe)
 export const pedirReplay = (id: string) =>
   post<{ clip_id: string | null; aviso?: string }>(`/decisoes/${id}/replay`);
@@ -87,9 +90,17 @@ export interface Zona {
   publicado?: boolean;
 }
 
+export interface VersaoZona {
+  artifact_version: string;
+  valid_from: string;
+  poligono_m: [number, number][];
+  erro_cm: number;
+}
+
 export interface EstadoZona {
   calibracao: string | null; // versao da calibracao do i3; sem ela nao da para converter
-  zona: Zona | null;
+  zona: Zona | null; // a que vale: a versao mais nova
+  versoes: VersaoZona[]; // da mais nova para a mais velha
 }
 
 export const lerZona = async (source_id: string): Promise<EstadoZona> => {
@@ -97,6 +108,10 @@ export const lerZona = async (source_id: string): Promise<EstadoZona> => {
   if (!r.ok) throw new Error(`/zonas: ${r.status} ${await r.text()}`);
   return r.json();
 };
+
+// voltar uma zona antiga cria uma versao nova com o mesmo desenho
+export const usarZona = (source_id: string, versao: string) =>
+  post<Zona>(`/zonas/${encodeURIComponent(source_id)}/${encodeURIComponent(versao)}/usar`);
 
 export const salvarZona = (corpo: { source_id: string; largura: number; altura: number; pontos: { x: number; y: number }[] }) =>
   post<Zona>("/zonas", corpo);
