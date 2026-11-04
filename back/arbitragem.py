@@ -40,7 +40,14 @@ BOLA_MORTA_S = 3.0     # bola no chao encerra o rally; o saque seguinte vem bem 
 # em jogo e volta a voar alto em menos de 1 s; bola no chao encerra o rally
 CONFIRMA_S = 1.0
 VZ_QUEDA = 3.0         # m/s: queda de verdade, nao bola rolando ou parada na mao
+# a deteccao perde a bola rapida perto do chao; a queda que falta sai do arco: de 4 m de altura
+# a -5 m/s ela chega ao chao em ~0,5 s, e quem decide se ela chegou e a regra do jogo
+QUEDA_S = 0.6
+SIGMA_CHAO_M = 4.5     # meia largura da quadra: ponto mais incerto que isso nao diz nem o lado
 GINASIO = ((-12.0, 30.0), (-12.0, 21.0), (-1.0, 25.0))  # x, y, z possiveis da bola, em m
+# FIVB: quadra mais zona livre (6,5 m no fundo, 5 m na lateral); alem dela a bola ja bateu em
+# placa, banco ou arquibancada, e a marcacao nao e de linha
+ZONA_LIVRE = ((-6.5, 24.5), (-5.0, 14.0))
 
 Calibracao = namedtuple("Calibracao", "source_id versao K dist H rms_cm space_id largura altura")
 # a quadra marcada no editor do b6, em metros (zonas.py)
@@ -80,6 +87,16 @@ def distancia_cm(ponto, poligono):
         if (ay > y) != (by > y) and x < ax + (y - ay) * dx / dy:
             dentro = not dentro
     return (-menor if dentro else menor) * 100.0
+
+
+def sigma_da_distancia_m(ponto, cov, poligono, h=1e-3):
+    """erro da distancia ate a linha mais perto (o que decide dentro/fora), pela covariancia do
+    ponto: g C g com g o gradiente da distancia. com uma camera so a profundidade e o eixo fraco;
+    na linha que corre ao longo dela esse erro quase nao conta"""
+    d = lambda x, y: distancia_cm((x, y), poligono) / 100.0
+    x, y = ponto
+    g = np.array([d(x + h, y) - d(x - h, y), d(x, y + h) - d(x, y - h)]) / (2 * h)
+    return math.sqrt(max(float(g @ cov @ g), 0.0))
 
 
 def arbitrar(ponto_m, sigma_cm, source_id, versao, track_id, instante, zona=None):
@@ -141,8 +158,10 @@ class Detector:
                 # teste de quique dos dois arcos decide; quique fechado vira lance na hora
                 guardado, self.pendente = self.pendente, None
                 decisao = self._decidir(cal, zona, *contato(guardado[2], novo), guardado[2], novo)
-                if decisao is None:
+                visto = guardado[2]
+                if decisao is None and visto.em(visto.fim)[2] < Z_JOGADOR:
                     self.pendente = guardado                 # inconclusivo: segue a regra do jogo
+                # senao a bola voltou a voar de onde um jogador alcanca: toque, nao chao
             if novo is not None:
                 if self.anterior is not None and novo.inicio - self.anterior.fim <= VAO_S:
                     decisao = self._decidir(cal, zona, *contato(self.anterior, novo),
@@ -216,7 +235,7 @@ class Detector:
     def _chegou_ao_chao(self, cal, zona, a):
         """arco que desce e some sem outro depois: chao se o fim dele ja esta em z = 0"""
         t_g = chegada_ao_chao(a)
-        if t_g is None or not (a.fim - 0.05 <= t_g <= a.fim + VAO_S) or a.vz(t_g) > -VZ_QUEDA:
+        if t_g is None or not (a.fim - 0.05 <= t_g <= a.fim + QUEDA_S) or a.vz(t_g) > -VZ_QUEDA:
             return None
         # no contato a bola esta no chao: o pixel que o arco preve nesse instante fixa o ponto
         # (raio do pixel com z = 0, como a homografia da 6c); a profundidade do arco, o eixo
@@ -242,20 +261,21 @@ class Detector:
 
     def _lance(self, cal, zona, t_c, X, cov, sigma_z, altura=None, pode_esperar=False):
         altura = X[2] if altura is None else altura
-        # a medida tem que separar chao de jogador (1 sigma da altura abaixo da altura de toque),
-        # senao "o chao cabe na incerteza" vale para qualquer coisa; o chao (z = 0) tem que caber
-        # nela, dos dois lados; o contato nao pode estar na altura de jogador nem fora do ginasio
-        informativa = sigma_z < Z_JOGADOR
-        if not (abs(altura) < 2 * sigma_z + 0.1 and altura < Z_JOGADOR):
+        if not pode_esperar:
+            # dois arcos: a altura do contato e medida, e tem que separar chao de jogador (1 sigma
+            # abaixo da altura de toque) com o chao (z = 0) cabendo nela
+            if not (sigma_z < Z_JOGADOR and abs(altura) < 2 * sigma_z + 0.1 and altura < Z_JOGADOR):
+                return None
+        # arco unico: a altura do fim do voo nao separa chao de manchete rente; quem separa e a
+        # regra do jogo, na espera (pendente)
+        if math.sqrt(max(np.linalg.eigvalsh(cov[:2, :2]).max(), 0.0)) > SIGMA_CHAO_M:
             return None
-        if not informativa and not (pode_esperar and sigma_z < 2 * Z_JOGADOR):
-            return None
-        if not all(lo <= v <= hi for v, (lo, hi) in zip(X[:2], GINASIO[:2])):
+        if not all(lo <= v <= hi for v, (lo, hi) in zip(X[:2], ZONA_LIVRE)):
             return None
         if t_c < self.morta_ate or self.pendente is not None:
             return None                                          # quique seguinte do mesmo rally
-        sigma_xy_cm = 100 * math.sqrt(max(np.linalg.eigvalsh(cov[:2, :2]).max(), 0.0))
-        sigma = banda_de_duvida_cm(cal.rms_cm, sigma_xy_cm, zona.erro_cm if zona else 0.0)
+        sigma_d_cm = 100 * sigma_da_distancia_m(X[:2], cov[:2, :2], zona.poligono if zona else CANTOS)
+        sigma = banda_de_duvida_cm(cal.rms_cm, sigma_d_cm, zona.erro_cm if zona else 0.0)
         tid = (self.arco or self.anterior).obs[-1][3] if (self.arco or self.anterior) else None
         instante = datetime.fromtimestamp(t_c, timezone.utc).isoformat(timespec="milliseconds")
         d = arbitrar((float(X[0]), float(X[1])), sigma, cal.source_id, cal.versao, tid,

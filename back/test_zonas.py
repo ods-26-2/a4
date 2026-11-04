@@ -7,7 +7,7 @@ import numpy as np
 
 import cena_sintetica as cena
 
-from arbitragem import Calibracao, Detector, Zona, arbitrar, banda_de_duvida_cm, calibracao, distancia_cm
+from arbitragem import Calibracao, Detector, Zona, arbitrar, banda_de_duvida_cm, calibracao, distancia_cm, sigma_da_distancia_m
 from kafka_bridge import TOPICO_POSICAO, KafkaBridge, motivo_invalido
 from zonas import (Registro, ZonaInvalida, erro_quadra_cm,
                    pontos_para_metros, validar_quadra)
@@ -56,6 +56,12 @@ assert abs(distancia_cm((18.5, 4.5), poligono) - 50) < 1e-3
 assert abs(distancia_cm((17, 4.5), poligono) + 100) < 1e-3
 assert abs(distancia_cm((19, 10), poligono) - np.hypot(100, 100)) < 1e-3
 assert distancia_cm((9, 0.1), [(0, 0.2), (18, 0), (18, 9), (0, 9)]) > -11
+
+# erro que decide e o da distancia ate a linha mais perto: na linha de fundo so o erro ao longo
+# da quadra conta, a profundidade (eixo fraco da camera) nao
+cov = np.diag([0.1 ** 2, 2.0 ** 2])
+assert abs(sigma_da_distancia_m((18.5, 4.5), cov, poligono) - 0.1) < 1e-6
+assert abs(sigma_da_distancia_m((9.0, 9.5), cov, poligono) - 2.0) < 1e-6
 
 # a regra usa a zona: o mesmo ponto muda de veredito com a linha deslocada 1 m
 zona = Zona([(0, 0), (19, 0), (19, 9), (0, 9)], 0.0, "zones-a4-cam0-7")
