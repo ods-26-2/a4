@@ -1,0 +1,9 @@
+{
+    "artifact_id": "app-volei",
+    "artifact_version": "1.0.0",
+    "kind": "MODEL",
+    "owner": "INV-1",
+    "uri": "modelo/app-volei/1.0.0/app-volei.onnx",
+    "hash_sha256": "7c26d0b6ae46263c9ebc76a4017f21f8474f95909d838a4af04e598b7db9486a",
+    "valid_from": "2026-11-03T15:00:59.671Z"
+}
