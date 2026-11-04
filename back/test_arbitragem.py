@@ -104,3 +104,11 @@ levantamento = [(t + 0.5, X) for t, X in cena.toque((6.0, 4.5, 2.6), (0, 0, 0), 
 assert rodar(cena.pixels(chegada + levantamento)) == []
 
 print("arbitragem ok")
+
+# o lance traz o pixel do quique no quadro bruto, para o player desenhar: ida e volta da distorcao
+cam_d = Camera(calibracao(cena.envelope()))
+cam_d.dist = np.array([-0.3, 0.1, 0.001, -0.002, -0.02])
+assert np.allclose(cam_d.pixel(cam_d.bruto(np.array([900.0, 500.0]))), [900.0, 500.0], atol=1e-3)
+(d,) = rodar(cena.pixels(cena.quique((12.0, 4.5), (6.0, 1.0, -9.0))))
+assert np.hypot(*(np.array(d["point_px"]) - cena.pixel(np.array([12.0, 4.5, 0.0])))) < 5, d["point_px"]
+print("pixel do lance ok")

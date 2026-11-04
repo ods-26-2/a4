@@ -259,7 +259,9 @@ class Detector:
         tid = (self.arco or self.anterior).obs[-1][3] if (self.arco or self.anterior) else None
         instante = datetime.fromtimestamp(t_c, timezone.utc).isoformat(timespec="milliseconds")
         d = arbitrar((float(X[0]), float(X[1])), sigma, cal.source_id, cal.versao, tid,
-                        instante.replace("+00:00", "Z"), zona) | {"altura_contato_m": round(float(altura), 2)}
+                        instante.replace("+00:00", "Z"), zona) | {
+            "altura_contato_m": round(float(altura), 2),
+            "point_px": [round(float(v), 1) for v in self._cam.bruto(self._cam.projetar(np.asarray(X, float)))]}
         if pode_esperar:
             # arco unico: sem o voo depois do toque nao ha teste de quique, a regra do jogo
             # desempata (a altura sozinha nao separa o chao de uma manchete rente)

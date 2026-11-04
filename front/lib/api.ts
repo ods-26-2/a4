@@ -16,6 +16,7 @@ export interface Decisao {
   artifact_version: string; // versao da calibracao que decidiu
   zones_version?: string | null; // versao da zona; null quando valeu a medida oficial
   clip?: ClipeS4; // replay do lance pelo S4 (ods.s4.clip), quando ja chegou
+  point_px?: [number, number]; // onde o A4 calculou o quique, no quadro da camera
   origem: "automatica" | "corrigida";
   operador: string | null;
   veredito_automatico: Veredito | null;
@@ -80,6 +81,18 @@ export interface EstadoP6 {
   video: string | null;
   sessao: SessaoP6 | null;
 }
+
+// bolas do S1 no tempo do video (s), para desenhar por cima do player; em_jogo = a que o A4
+// pos no voo da bola, as outras sao o que o detector achou e o filtro fisico descartou
+export interface DeteccaoP6 {
+  t: number;
+  bolas: [number, number, boolean][];
+}
+
+export const deteccoesP6 = async (de: number, ate: number): Promise<DeteccaoP6[]> => {
+  const r = await fetch(`${API}/p6/deteccoes?de=${de}&ate=${ate}`, { cache: "no-store" });
+  return r.ok ? r.json() : [];
+};
 
 export const estadoP6 = async (): Promise<EstadoP6> => {
   const r = await fetch(`${API}/p6`, { cache: "no-store" });

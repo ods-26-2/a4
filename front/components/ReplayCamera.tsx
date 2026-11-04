@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { VIDEO_P6, enquadrar, estadoCamera, estadoP6, pedirReplay, type Decisao, type SessaoP6 } from "@/lib/api";
+import { VIDEO_P6, deteccoesP6, enquadrar, estadoCamera, estadoP6, pedirReplay, type Decisao, type DeteccaoP6, type SessaoP6 } from "@/lib/api";
 import s from "./ReplayCamera.module.css";
 
 const PASSO_GRAUS = 5;
 const ANTES_S = 3; // replay: o lance e os segundos antes dele
 const DEPOIS_S = 2;
 const MARCAS = 600; // ~2 min de relogio do ao vivo, a 4-5 timeupdate por segundo
+// o "ao vivo" roda atras da camera o tempo da analise (I1 -> I2 -> S1 -> A4, ~2 s): assim o quadro
+// na tela ja tem as deteccoes e o lance dele, como numa transmissao com analise
+const ATRASO_S = 3;
 
 /**
  * Câmera ao vivo, replay do lance e enquadramento P7. Os ângulos exibidos vêm do estado real
@@ -29,6 +32,9 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
   const [falhou, setFalhou] = useState<string | null>(null); // gravacao que o navegador nao abriu
   const [clipe, setClipe] = useState<string | null>(null); // url do clipe do S4 tocando
   const pedidos = useRef(new Set<string>()); // lances ja pedidos ao S4
+  const tela = useRef<HTMLCanvasElement>(null);
+  const deteccoes = useRef<DeteccaoP6[]>([]);
+  const [mostrar, setMostrar] = useState(true);
   const semVideo = !gravacao || falhou === gravacao;
   const [angulo, setAngulo] = useState({ pan: 0, tilt: 0 });
   const [status, setStatus] = useState("Consultando estado do P7…");
@@ -73,13 +79,68 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
     };
   }, []);
 
+  // sobreposicao: busca as bolas do S1 em volta do ponto do video e desenha a do quadro atual
+  useEffect(() => {
+    if (!mostrar || clipe) return;
+    let ativo = true;
+    let quadro = 0;
+    const canvas = tela.current;
+    const busca = setInterval(async () => {
+      const v = video.current;
+      if (v && sessao.current) deteccoes.current = await deteccoesP6(v.currentTime - 1, v.currentTime + 2);
+    }, 700);
+    const desenhar = () => {
+      const v = video.current, c = tela.current;
+      if (v && c && ativo) {
+        c.width = c.clientWidth;
+        c.height = c.clientHeight;
+        const g = c.getContext("2d")!;
+        g.clearRect(0, 0, c.width, c.height);
+        // o video fica inteiro dentro da caixa (object-fit: contain)
+        const esc = Math.min(c.width / (v.videoWidth || 1280), c.height / (v.videoHeight || 720));
+        const ox = (c.width - (v.videoWidth || 1280) * esc) / 2, oy = (c.height - (v.videoHeight || 720) * esc) / 2;
+        const t = v.currentTime;
+        const perto = deteccoes.current.reduce<DeteccaoP6 | null>((m, d) => (!m || Math.abs(d.t - t) < Math.abs(m.t - t) ? d : m), null);
+        if (perto && Math.abs(perto.t - t) < 0.04) {
+          for (const [u, w, emJogo] of perto.bolas) {
+            g.beginPath();
+            g.arc(ox + u * esc, oy + w * esc, emJogo ? 9 : 7, 0, 2 * Math.PI);
+            g.lineWidth = emJogo ? 3 : 1.5;
+            g.strokeStyle = emJogo ? "#22e06b" : "#ffd23f";
+            g.stroke();
+          }
+        }
+        // onde o A4 calculou o quique, perto do instante do lance
+        const s = sessao.current;
+        if (lance?.point_px && s) {
+          const tl = (Date.parse(lance.instante) - Date.parse(s.started_at)) / 1000;
+          if (Math.abs(t - tl) < 0.6) {
+            g.beginPath();
+            g.arc(ox + lance.point_px[0] * esc, oy + lance.point_px[1] * esc, 16, 0, 2 * Math.PI);
+            g.lineWidth = 3;
+            g.strokeStyle = "#ff3b3b";
+            g.stroke();
+          }
+        }
+      }
+      quadro = requestAnimationFrame(desenhar);
+    };
+    quadro = requestAnimationFrame(desenhar);
+    return () => {
+      ativo = false;
+      clearInterval(busca);
+      cancelAnimationFrame(quadro);
+      canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [mostrar, clipe, lance]);
+
   function marcar() {
     const v = video.current;
     if (!v || !aoVivo.current) return;
     const s = sessao.current;
     if (s) {
-      // mesmo quadro que a camera esta mandando ao I1; corrige se escorregar mais de 1 s
-      const esperado = ((Date.now() - Date.parse(s.publicada_em)) / 1000) % v.duration;
+      // o quadro que a camera mandou ao I1 ha ATRASO_S; corrige se escorregar mais de 1 s
+      const esperado = (((Date.now() - Date.parse(s.publicada_em)) / 1000 - ATRASO_S) % v.duration + v.duration) % v.duration;
       if (Math.abs(v.currentTime - esperado) > 1) v.currentTime = esperado;
     }
     relogio.current.push([Date.now(), v.currentTime]);
@@ -115,7 +176,7 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
     clearTimeout(fimReplay.current);
     fimReplay.current = setTimeout(() => {
       // volta para onde o ao vivo estaria se não tivesse parado
-      v.currentTime = (volta.pos + (Date.now() - volta.t) / 1000) % v.duration;
+      v.currentTime = (volta.pos + (Date.now() - volta.t) / 1000) % v.duration;   // ja com o atraso
       aoVivo.current = true;
       setModo("ao vivo");
     }, (ANTES_S + DEPOIS_S) * 1000);
@@ -146,11 +207,15 @@ export default function ReplayCamera({ lance, aviso }: { lance: Decisao | undefi
             loop={!clipe} playsInline onTimeUpdate={marcar}
             onEnded={() => { if (clipe) { setClipe(null); aoVivo.current = true; setModo("ao vivo"); } }}
             onError={() => { if (clipe) { setClipe(null); aoVivo.current = true; setModo("ao vivo"); aviso("O clipe do S4 não abriu; replay na gravação"); } else setFalhou(gravacao); }} />
+          <canvas ref={tela} className={s.sobreposicao} aria-hidden="true" />
           <span className={`${s.selo} ${modo === "replay" ? s.replay : ""}`}>{clipe ? "replay · S4" : modo}</span>
         </div>
       )}
       <div>
         <button className="botao pri" onClick={replay}>Replay do lance</button>
+        <label className={s.opcao}>
+          <input type="checkbox" checked={mostrar} onChange={(e) => setMostrar(e.target.checked)} /> Mostrar detecções
+        </label>
       </div>
 
       <div className={s.camera}>

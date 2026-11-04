@@ -8,6 +8,7 @@ Integração real: configure A4_KAFKA_ENABLED=true e A4_KAFKA_BOOTSTRAP_SERVERS.
 O frontend conversa somente com esta API; nunca acessa Kafka diretamente.
 """
 import asyncio
+import bisect
 import json
 import logging
 import os
@@ -47,6 +48,10 @@ detectores: dict[str, tuple[str, Detector]] = {}     # source_id -> (session_id,
 # último ods.session.started: started_at amarra o captured_at dos lances à posição no vídeo
 sessao_p6: dict[str, Any] | None = None
 clipes_pedidos: dict[str, str] = {}                  # message_id do ods.s4.capture.command -> decisao_id
+# bolas que o S1 mandou na sessao em curso, no tempo do video, para o player desenhar (6c: a
+# sobreposicao na tela sai de S1): [(video_s, [[u, v, em_jogo], ...])], em ordem de tempo
+deteccoes_p6: list[tuple[float, list]] = []
+MAX_DETECCOES = 20000                                # ~11 min de jogo a 30 quadros/s
 # media_uri do S4 (s4://<caminho>) vira URL do navegador por esta base: acesso controlado do S4
 S4_MIDIA_URL = os.getenv("A4_S4_MEDIA_URL", "").rstrip("/")
 REPLAY_ANTES_S, REPLAY_DEPOIS_S = 3.0, 2.0
@@ -157,22 +162,34 @@ def receber_posicao(envelope: dict[str, Any]):
     # o barramento é compartilhado: só interessa a câmera de uma partida aberta aqui
     if not any(not p["encerrada"] and p["source_id"] == source_id for p in partidas.values()):
         return
-    cal = calibracoes.get(source_id)
-    if cal is None:
-        log.debug("Posição ignorada: sem calibração para source_id=%s", source_id)
-        return
-    sessao = envelope["session_id"]
-    if detectores.get(source_id, (None,))[0] != sessao:
-        detectores[source_id] = (sessao, Detector())  # sessão nova: os track_id antigos não valem
-    detector = detectores[source_id][1]
     t_s = datetime.fromisoformat(envelope["captured_at"].replace("Z", "+00:00")).timestamp()
     # todas as bolas do quadro juntas: a bola em jogo e a que voa, nao um track_id
     # o ods.s1.position nao traz predicted (6c): ponto extrapolado pelo I2 chega como medido. o
     # ajuste do arco descarta o que nao voa, e o I2 so extrapola dentro do horizonte da predicao
     pontos = [(p["track_id"], p["point_px"]) for p in envelope["payload"]["positions"] if p["class"] == "ball"]
-    decisao = detector.quadro(cal, t_s, pontos, registro.atual(source_id))
-    if decisao:
-        receber_decisao_automatica(decisao)
+    em_jogo = None
+    cal = calibracoes.get(source_id)
+    if cal is not None:
+        sessao = envelope["session_id"]
+        if detectores.get(source_id, (None,))[0] != sessao:
+            detectores[source_id] = (sessao, Detector())  # sessão nova: os track_id antigos não valem
+        detector = detectores[source_id][1]
+        decisao = detector.quadro(cal, t_s, pontos, registro.atual(source_id))
+        if detector.arco is not None and detector.arco.fim == t_s:
+            em_jogo = detector.arco.obs[-1][3]           # o ponto que entrou no voo da bola
+        if decisao:
+            receber_decisao_automatica(decisao)
+    guardar_deteccoes(envelope, t_s, pontos, em_jogo)
+
+
+def guardar_deteccoes(envelope, t_s, pontos, em_jogo):
+    """bolas do quadro no tempo do video da sessao em curso, marcando a que o A4 pos no voo"""
+    if not pontos or sessao_p6 is None or envelope["session_id"] != sessao_p6["session_id"]:
+        return
+    inicio = datetime.fromisoformat(sessao_p6["started_at"].replace("Z", "+00:00")).timestamp()
+    deteccoes_p6.append((round(t_s - inicio, 3),
+                         [[round(px[0], 1), round(px[1], 1), tid == em_jogo] for tid, px in pontos]))
+    del deteccoes_p6[:-MAX_DETECCOES]
 
 
 def receber_sessao(envelope: dict[str, Any]):
@@ -180,6 +197,8 @@ def receber_sessao(envelope: dict[str, Any]):
     não fecha. A posição também troca o Detector pelo session_id; isto cobre o quique que fica
     parado no meio quando a sessão nova chega antes do primeiro quadro dela."""
     global sessao_p6
+    if sessao_p6 is None or sessao_p6["session_id"] != envelope["session_id"]:
+        deteccoes_p6.clear()                          # volta nova do replay: o tempo recomeca
     # ponytail: uma câmera só no player; por source_id se o A4 mostrar duas
     sessao_p6 = {"session_id": envelope["session_id"], "started_at": envelope["payload"]["started_at"],
                  "publicada_em": envelope["published_at"]}
@@ -343,6 +362,14 @@ def video_p6():
     if not P6_VIDEO.is_file():
         raise HTTPException(404, f"Pseudo-P6 sem vídeo: {P6_VIDEO} não existe. Aponte A4_P6_VIDEO para um .mp4.")
     return FileResponse(P6_VIDEO, media_type="video/mp4")
+
+
+@app.get("/p6/deteccoes")
+def deteccoes_do_p6(de: float, ate: float):
+    """bolas do S1 entre de e ate (segundos do video), para a sobreposicao do player"""
+    i = bisect.bisect_left(deteccoes_p6, de, key=lambda d: d[0])
+    j = bisect.bisect_right(deteccoes_p6, ate, key=lambda d: d[0])
+    return [{"t": t, "bolas": bolas} for t, bolas in deteccoes_p6[i:j]]
 
 
 @app.post("/decisoes/{did}/replay")

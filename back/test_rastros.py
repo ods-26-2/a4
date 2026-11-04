@@ -64,4 +64,11 @@ main.receber_sessao({"session_id": "s-6", "published_at": iso(T0), "payload": {"
 assert main.estado_p6()["sessao"]["started_at"] == iso(T0)
 assert lances(p, evs[20:]) == [], "ods.session.started tem que zerar o voo em andamento"
 
+# sobreposicao do player: as bolas da sessao em curso, no tempo do video, com a do voo marcada
+main.receber_sessao({"session_id": "s-7", "published_at": iso(T0), "payload": {"sources": ["cam0"], "started_at": iso(T0)}})
+lances(main.nova_partida(source_id="cam0"), envelopes(QUIQUE, sessao="s-7"))
+ds = main.deteccoes_do_p6(0.5, 1.5)
+assert ds and all(len(b) == 3 for d in ds for b in d["bolas"]), ds[:2]
+assert any(b[2] for d in ds for b in d["bolas"]), "a bola que entrou no voo tem que vir marcada"
+
 print("rastros ok")

@@ -58,6 +58,17 @@ class Camera:
     def pixel(self, px):
         return sem_distorcao(self.K, self.dist, px)
 
+    def bruto(self, px):
+        """pixel do modelo pinhole -> pixel bruto do quadro (aplica a distorcao), para desenhar"""
+        k1, k2, p1, p2, k3 = (list(self.dist) + [0.0] * 5)[:5]
+        fx, fy, cx, cy = self.K[0, 0], self.K[1, 1], self.K[0, 2], self.K[1, 2]
+        x, y = (px[0] - cx) / fx, (px[1] - cy) / fy
+        r2 = x * x + y * y
+        radial = 1 + k1 * r2 + k2 * r2 * r2 + k3 * r2 ** 3
+        xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+        yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+        return np.array([fx * xd + cx, fy * yd + cy])
+
     def projetar(self, X):
         p = self.P @ np.append(X, 1.0)
         return p[:2] / p[2]
