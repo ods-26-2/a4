@@ -1,0 +1,42 @@
+# testes do back e checagem do front do A4 a cada envio. nenhum job usa Kafka.
+name: a4
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  back:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: back
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: back/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Testes (regra, placar, zonas, S1, P7, token, partidas salvas, grupo do Kafka)
+        run: for t in test_*.py; do echo "== $t"; python "$t" || exit 1; done
+
+  front:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx eslint .

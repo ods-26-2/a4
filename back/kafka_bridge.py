@@ -28,10 +28,22 @@ P7_SOURCE_ID = os.getenv("A4_P7_SOURCE_ID", "pt0")        # mecanismo pan-tilt d
 CAMPOS_ENVELOPE = ("message_id", "message_type", "schema", "schema_version", "producer", "payload")
 VERSAO_SUPORTADA = "1."
 MAX_VISTOS = 5000
+# artefatos retidos: lidos do começo a cada partida, senão o A4 que sobe depois do I3 (ou da câmera)
+# fica sem calibração ou sem sessão. o resto (posição, estado do P7, clipes) é fluxo: do fim em diante
+DO_COMECO = (TOPICO_CALIBRACAO, TOPICO_SESSAO)
 
 
 def agora() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def posicionar(consumer, particoes) -> None:
+    """on_assign: calibração e sessão do começo, o resto do fim. Do fim, e não do offset salvo:
+    o back que reinicia não reprocessa posições velhas, que virariam lances de outro momento"""
+    from confluent_kafka import OFFSET_BEGINNING, OFFSET_END
+    for p in particoes:
+        p.offset = OFFSET_BEGINNING if p.topic in DO_COMECO else OFFSET_END
+    consumer.assign(particoes)
 
 
 def motivo_invalido(envelope: Any, schema: str) -> str | None:
@@ -60,7 +72,11 @@ class KafkaBridge:
         ao_receber_sessao: Callable[[dict[str, Any]], None] | None = None,
         ao_receber_clipe: Callable[[dict[str, Any]], None] | None = None,
     ):
-        self.bootstrap = os.getenv("A4_KAFKA_BOOTSTRAP_SERVERS", "34.66.235.91:9093")
+        # sem endereço embutido: o broker é configuração da build (local, Jetson 172.18.4.56:9092...)
+        self.bootstrap = os.getenv("A4_KAFKA_BOOTSTRAP_SERVERS")
+        # grupo próprio por instância: no broker compartilhado, dois backs do A4 no mesmo grupo
+        # dividiriam as partições e cada um veria só parte das posições
+        self.grupo = os.getenv("A4_KAFKA_GROUP_ID") or f"A4-{uuid.uuid4().hex[:8]}"
         self._ao_receber = {topico: f for topico, f in ((TOPICO_CALIBRACAO, ao_receber_calibracao),
                             (TOPICO_POSICAO, ao_receber_posicao), (TOPICO_SESSAO, ao_receber_sessao),
                             (TOPICO_CLIPE_S4, ao_receber_clipe)) if f}
@@ -86,8 +102,10 @@ class KafkaBridge:
         return self._enabled
 
     def start(self) -> None:
+        if not self.bootstrap:
+            raise RuntimeError("A4_KAFKA_BOOTSTRAP_SERVERS não definido; o A4 não tem broker padrão")
         try:
-            from confluent_kafka import OFFSET_BEGINNING, Consumer, Producer
+            from confluent_kafka import Consumer, Producer
         except ImportError as exc:
             raise RuntimeError(
                 "Kafka habilitado, mas confluent-kafka não está instalado. "
@@ -101,20 +119,10 @@ class KafkaBridge:
         })
         self._consumer = Consumer({
             "bootstrap.servers": self.bootstrap,
-            "group.id": os.getenv("A4_KAFKA_GROUP_ID", "A4-score-manager"),
+            "group.id": self.grupo,
             "auto.offset.reset": "latest",
-            "enable.auto.commit": True,
+            "enable.auto.commit": False,
         })
-
-        def posicionar(consumer, particoes):
-            # calibração é artefato retido: lida do começo a cada partida, senão o A4 que sobe
-            # depois do I3 (ou reinicia com offset salvo) fica sem calibração e não arbitra.
-            # a sessão também: a câmera só anuncia no começo da volta, e a última é a atual
-            for p in particoes:
-                if p.topic in (TOPICO_CALIBRACAO, TOPICO_SESSAO):
-                    p.offset = OFFSET_BEGINNING
-            consumer.assign(particoes)
-
         topicos = [TOPICO_ESTADO_P7, *self._ao_receber]
         self._consumer.subscribe(topicos, on_assign=posicionar)
         self._enabled = True
@@ -126,7 +134,7 @@ class KafkaBridge:
             })
         self._thread = threading.Thread(target=self._consumir, name="a4-kafka-consumer", daemon=True)
         self._thread.start()
-        log.info("Kafka habilitado em %s; consumindo %s", self.bootstrap, topicos)
+        log.info("Kafka habilitado em %s, grupo %s; consumindo %s", self.bootstrap, self.grupo, topicos)
 
     def close(self) -> None:
         self._stop.set()

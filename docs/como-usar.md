@@ -54,10 +54,13 @@ Em outro terminal, publicar a calibração pelo I3 (repo `i3/`, com o venv dele)
 ```
 cd ../i3
 python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python main.py --kafka localhost:9092 < dados/pontos_quadra.csv
+.venv/bin/python main.py --kafka localhost:9092 --source-id cam0 --espaco quadra-volei-fivb \
+    --origem "canto proximo esquerdo" --eixos "x ao longo dos 18 m, y afastando da camera" \
+    < dados/pontos_quadra.csv
 ```
 
-O back loga `Calibração I3 recebida: source_id=cam-ref versão=cal-cam-ref-1 …`. A calibração fica retida
+O referencial (`--espaco`, `--origem`, `--eixos`) tem que ser esse: é o que a regra de dentro e fora e
+as zonas do A4 usam. O back loga `Calibração cal-cam0-1 recebida para cam0`. A calibração fica retida
 no tópico `ods.i3.calibration`: reiniciar o back lê a última de novo, sem republicar.
 Mensagem fora do envelope da 6c é descartada com o motivo no log. Para zerar o broker:
 `docker compose down`.
@@ -193,12 +196,19 @@ Instale as dependências atualizadas e configure o backend:
 ```bash
 pip install -r requirements.txt
 export A4_KAFKA_ENABLED=true
-export A4_KAFKA_BOOTSTRAP_SERVERS=34.66.235.91:9093
+export A4_KAFKA_BOOTSTRAP_SERVERS=172.18.4.56:9092   # Kafka da Jetson, só na rede do DCOMP
 export A4_MODO_DEMO=false
+export A4_TOKEN=troque-este-valor                   # token do árbitro, ver abaixo
 uvicorn main:app --reload --port 8000
 ```
 
-No PowerShell, use `$env:A4_KAFKA_ENABLED="true"`, `$env:A4_KAFKA_BOOTSTRAP_SERVERS="34.66.235.91:9093"` e `$env:A4_MODO_DEMO="false"` antes de iniciar o Uvicorn. As variáveis devem ser definidas no terminal do backend.
+No PowerShell, use `$env:A4_KAFKA_ENABLED="true"`, `$env:A4_KAFKA_BOOTSTRAP_SERVERS="172.18.4.56:9092"` e `$env:A4_MODO_DEMO="false"` antes de iniciar o Uvicorn. As variáveis devem ser definidas no terminal do backend.
+
+Cada back do A4 consome num grupo próprio (`A4-<aleatório>`, ou `A4_KAFKA_GROUP_ID`), para dois backs no mesmo broker não dividirem as mensagens. A calibração e a sessão são lidas desde o começo do tópico; posição, estado do P7 e clipes, do fim em diante: o back que reinicia não reprocessa posições antigas.
+
+**Token do árbitro.** Com `A4_TOKEN`, toda rota que altera o jogo ou move a câmera (os `POST`) exige `Authorization: Bearer <token>`; ler o placar e o `/eventos` continuam livres. O front pede o token na primeira ação e guarda no navegador. Sem `A4_TOKEN`, a API fica aberta, o que só serve para desenvolvimento local.
+
+**Partidas salvas.** O back grava as partidas em `back/dados/partidas.json` (ou `A4_DADOS_DIR`) a cada mudança e as carrega ao subir, então reiniciar não perde o placar.
 
 O A4 publica comandos de câmera em `ods.p7.move.command` usando um envelope com `message_type: "command"`, `schema: "ods.p7.move.command"` e `payload.pan_deg`/`payload.tilt_deg`. Ele consome `ods.p7.state` para atualizar a posição mostrada na interface. O lance automático não vem de outro componente: na 6c quem decide é o próprio A4, a partir de `ods.s1.position` e `ods.i3.calibration`.
 
@@ -208,7 +218,7 @@ Endpoints úteis:
 - `GET /camera/estado`: posição e estado mais recente recebido em `ods.p7.state`.
 - `POST /camera/enquadrar?pan_deg=10&tilt_deg=5`: publica um comando em `ods.p7.move.command`. O ângulo mostrado na tela só muda quando chega o estado confirmado do P7.
 
-Se o Kafka não estiver habilitado, `/camera/enquadrar` responde HTTP 503 em vez de fingir que a câmera se moveu. O host padrão é o do guia de Kafka do projeto; ajuste `A4_KAFKA_BOOTSTRAP_SERVERS` se o ambiente da equipe usar outro broker. Credenciais/TLS adicionais, se exigidas pelo cluster, devem ser adicionadas à configuração do cliente em `back/kafka_bridge.py`.
+Se o Kafka não estiver habilitado, `/camera/enquadrar` responde HTTP 503 em vez de fingir que a câmera se moveu. Não há broker padrão: sem `A4_KAFKA_BOOTSTRAP_SERVERS`, o back sobe sem barramento e diz o motivo no log. Credenciais/TLS adicionais, se exigidas pelo cluster, devem ser adicionadas à configuração do cliente em `back/kafka_bridge.py`.
 
 Teste rápido do Score Manager e do contrato de integração:
 
@@ -277,7 +287,7 @@ cd front && npm run dev
 
 - **Vídeo:** `old/yolo/clipe.mp4` por padrão; outro `.mp4` com `A4_P6_VIDEO`.
 - **Replay do lance, sem barramento:** volta o vídeo para 3 s antes do lance, toca 5 s e volta ao ao vivo. O instante do lance vira posição do vídeo pelo relógio que a tela guarda enquanto está aberta, então lance de antes de abrir a tela não tem replay. Os lances do modo demo são sorteados; o replay mostra o que o vídeo exibia naquela hora.
-- **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração vem de `old/yolo/calibracao-cam0.json`, saída do I3 para esse clipe (`main.py --source-id cam0 < dados/pontos_quadra.csv`).
+- **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração vem de `old/yolo/calibracao-cam0.json`, saída do I3 para esse clipe (`main.py --source-id cam0 --espaco quadra-volei-fivb ... < dados/pontos_quadra.csv`, com o referencial da seção 1.1).
 
 ### Com o barramento
 

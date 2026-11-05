@@ -4,14 +4,17 @@ Parte do INV-1 · ODS 2026/2. O A4 é a aplicação de arbitragem: decide se a b
 dentro ou fora, mantém o placar com correção manual e dá ao árbitro a tela da partida.
 O sistema propõe, o árbitro decide.
 
-Este repositório está no começo do Sprint 3. Por enquanto o back é um **mock** que inventa
-lances, para o front já ter com o que trabalhar.
+Com o barramento ligado, o back recebe a posição da bola do S1 (`ods.s1.position`) e a
+calibração do I3 (`ods.i3.calibration`), reconstrói o voo em 3D e decide o quique; pede o replay
+ao S4 e enquadra a câmera pelo P7. Sem barramento, o **modo demo** inventa um lance a cada 6 s,
+para o front ter com o que trabalhar. As partidas ficam salvas em arquivo, e com `A4_TOKEN` só o
+árbitro altera o jogo.
 
 ## Estrutura
 
 ```
 a4/
-├── back/    API do A4 (FastAPI). Hoje é mock: inventa um lance a cada 6 s
+├── back/    API do A4 (FastAPI): regra de dentro e fora, placar, zonas, P7 e S4
 ├── front/   tela do árbitro (Next.js 16)
 ├── docker-compose.yml   kafka local para testar o barramento
 ├── docs/    como usar, contrato da API e documentos de referência do squad
@@ -46,7 +49,7 @@ O passo a passo completo, o contrato da API e os problemas comuns estão em
 |---|---|
 | [`docs/como-usar.md`](docs/como-usar.md) | como rodar back e front, contrato da API, problemas comuns |
 | [`docs/INV-1_arquitetura.pdf`](docs/INV-1_arquitetura.pdf) | projeto de componente do squad (I2, I3, A4) e divisão em sprints |
-| [`docs/INV-1_interfaces.md`](docs/INV-1_interfaces.md) | contratos de I2 e I3 entregues no Sprint 2 |
+| [`docs/INV-1_interfaces.md`](docs/INV-1_interfaces.md) | contratos de I2 e I3 entregues no Sprint 2 (antes da 6c; os atuais estão no `docs/CONTRATO.md` de cada repo) |
 | [`docs/Guia_Kafka_B2_v2.pdf`](docs/Guia_Kafka_B2_v2.pdf) | guia do barramento Kafka do projeto |
 | [`old/README.md`](old/README.md) e [`old/docs/como-rodar.md`](old/docs/como-rodar.md) | o pipeline antigo I3 → I2 → A4 |
 

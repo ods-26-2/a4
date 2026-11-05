@@ -6,20 +6,25 @@ Desenvolvimento local (sem Kafka):
 
 Integração real: configure A4_KAFKA_ENABLED=true e A4_KAFKA_BOOTSTRAP_SERVERS.
 O frontend conversa somente com esta API; nunca acessa Kafka diretamente.
+Com A4_TOKEN definido, as rotas que alteram o jogo exigem `Authorization: Bearer <token>`.
 """
 import asyncio
 import bisect
+import functools
 import json
 import logging
 import os
 import random
+import secrets
+import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -55,16 +60,58 @@ MAX_DETECCOES = 20000                                # ~11 min de jogo a 30 quad
 # media_uri do S4 (s4://<caminho>) vira URL do navegador por esta base: acesso controlado do S4
 S4_MIDIA_URL = os.getenv("A4_S4_MEDIA_URL", "").rstrip("/")
 REPLAY_ANTES_S, REPLAY_DEPOIS_S = 3.0, 2.0
+# 6c (Arquitetura, seção 5): o backend valida, persiste e traduz o que o usuário informa. As
+# partidas vão para um arquivo a cada mudança, e o back que reinicia continua o jogo
+ARQUIVO_PARTIDAS = Path(os.getenv("A4_DADOS_DIR") or Path(__file__).parent / "dados") / "partidas.json"
+# token do árbitro: sem ele definido, a API fica aberta (desenvolvimento local)
+TOKEN = os.getenv("A4_TOKEN") or None
+# a thread do Kafka e as rotas mexem nas mesmas partidas, calibrações e detecções
+trava = threading.RLock()
 
 
 def agora():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def salvar_partidas():
+    """grava todas as partidas de uma vez, em arquivo temporário trocado no lugar: um back que
+    cai no meio da gravação deixa o arquivo anterior inteiro"""
+    with trava:
+        ARQUIVO_PARTIDAS.parent.mkdir(parents=True, exist_ok=True)
+        temporario = ARQUIVO_PARTIDAS.with_suffix(".tmp")
+        temporario.write_text(json.dumps(list(partidas.values()), ensure_ascii=False), encoding="utf-8")
+        os.replace(temporario, ARQUIVO_PARTIDAS)
+
+
+def carregar_partidas():
+    """partidas salvas pelo back anterior; arquivo ilegível é guardado à parte e o back sobe vazio"""
+    if not ARQUIVO_PARTIDAS.is_file():
+        return
+    try:
+        salvas = json.loads(ARQUIVO_PARTIDAS.read_text(encoding="utf-8"))
+        with trava:
+            partidas.update({p["id"]: p for p in salvas})
+        log.info("%d partidas carregadas de %s", len(salvas), ARQUIVO_PARTIDAS)
+    except (OSError, ValueError, KeyError, TypeError):
+        guardado = ARQUIVO_PARTIDAS.with_name(f"partidas-ilegivel-{int(time.time())}.json")
+        ARQUIVO_PARTIDAS.rename(guardado)
+        log.exception("Arquivo de partidas ilegível; guardado em %s e o back começa sem partidas", guardado)
+
+
+def exige_token(authorization: str | None = Header(default=None)):
+    """rotas que alteram o jogo ou movem a câmera: só com o token do árbitro, quando há token"""
+    if TOKEN is None:
+        return
+    if authorization is None or not secrets.compare_digest(authorization.encode(), f"Bearer {TOKEN}".encode()):
+        raise HTTPException(401, "token do árbitro ausente ou errado", headers={"WWW-Authenticate": "Bearer"})
+
+
 def nova_partida(time_a="Time A", time_b="Time B", source_id="cam0", pid=None):
     p = {"id": pid or str(uuid.uuid4()), "time_a": time_a, "time_b": time_b,
          "source_id": source_id, "encerrada": False, "decisoes": [], "versao": 0}
-    partidas[p["id"]] = p
+    with trava:
+        partidas[p["id"]] = p
+        salvar_partidas()
     return p
 
 
@@ -116,8 +163,10 @@ def buscar_decisao(did):
 
 
 def mudou(p):
-    p["versao"] += 1
-    return visao(p)
+    with trava:
+        p["versao"] += 1
+        salvar_partidas()
+        return visao(p)
 
 
 def adicionar_decisao(p, decisao):
@@ -136,6 +185,15 @@ def adicionar_decisao(p, decisao):
     return True
 
 
+def sob_trava(funcao):
+    """receptores do Kafka: rodam na thread do consumidor, e as rotas leem o mesmo estado"""
+    @functools.wraps(funcao)
+    def com_trava(*args, **kwargs):
+        with trava:
+            return funcao(*args, **kwargs)
+    return com_trava
+
+
 def receber_decisao_automatica(decisao: dict[str, Any]):
     """Lance decidido pelo Detector (ods.s1.position): vai para a partida aberta da câmera."""
     source_id = str(decisao.get("source_id", "cam0"))
@@ -149,6 +207,7 @@ def receber_decisao_automatica(decisao: dict[str, Any]):
         log.info("Decisão automática %s adicionada à partida %s", decisao.get("decisao_id"), p["id"])
 
 
+@sob_trava
 def receber_calibracao(envelope: dict[str, Any]):
     """Recebe ods.i3.calibration; a mais nova substitui a anterior da mesma câmera."""
     cal = calibracao(envelope)
@@ -156,6 +215,7 @@ def receber_calibracao(envelope: dict[str, Any]):
     log.info("Calibração %s recebida para %s", cal.versao, cal.source_id)
 
 
+@sob_trava
 def receber_posicao(envelope: dict[str, Any]):
     """Recebe ods.s1.position e passa a bola pela regra, usando a zona salva da câmera."""
     source_id = envelope["source_id"]
@@ -192,6 +252,7 @@ def guardar_deteccoes(envelope, t_s, pontos, em_jogo):
     del deteccoes_p6[:-MAX_DETECCOES]
 
 
+@sob_trava
 def receber_sessao(envelope: dict[str, Any]):
     """ods.session.started (6c, componente com estado): quique em andamento da sessão anterior
     não fecha. A posição também troca o Detector pelo session_id; isto cobre o quique que fica
@@ -207,12 +268,17 @@ def receber_sessao(envelope: dict[str, Any]):
             detectores.pop(source_id, None)
 
 
+@sob_trava
 def receber_clipe(envelope: dict[str, Any]):
     """ods.s4.clip do pedido de replay: o clipe fica no lance e a tela recebe pela partida"""
     did = clipes_pedidos.pop(str(envelope.get("correlation_id")), None)
     if did is None:
         return                                        # clipe de outro pedido ou de outra aplicação
-    p, d = buscar_decisao(did)
+    try:
+        p, d = buscar_decisao(did)
+    except HTTPException:
+        log.warning("Clipe %s chegou para o lance %s, que não existe mais", envelope["payload"].get("clip_id"), did)
+        return
     c = envelope["payload"]
     uri = c["media_uri"]
     url = f"{S4_MIDIA_URL}/{uri.removeprefix('s4://')}" if S4_MIDIA_URL and uri.startswith("s4://") else None
@@ -239,9 +305,12 @@ def lance_falso(p):
 @asynccontextmanager
 async def ciclo(_app):
     global kafka
-    demo = nova_partida(pid="demo")
+    carregar_partidas()
+    demo = partidas.get("demo") or nova_partida(pid="demo")
     tarefa = None
     registro.carregar()
+    if TOKEN is None:
+        log.warning("A4_TOKEN não definido: qualquer um que alcance a API altera o jogo e move a câmera.")
     if CALIBRACAO_ARQUIVO:
         with open(CALIBRACAO_ARQUIVO, encoding="utf-8") as arquivo:
             conteudo = json.load(arquivo)
@@ -258,8 +327,9 @@ async def ciclo(_app):
         async def gerar():
             while True:
                 await asyncio.sleep(INTERVALO_S)
-                if not demo["encerrada"]:
-                    lance_falso(demo)
+                with trava:
+                    if not demo["encerrada"]:
+                        lance_falso(demo)
         tarefa = asyncio.create_task(gerar())
         log.warning("Modo demo ativo: decisões fictícias serão geradas. Defina A4_MODO_DEMO=false para desligar.")
     try:
@@ -278,6 +348,8 @@ async def ciclo(_app):
 
 app = FastAPI(title="A4 · Score Manager e Camera Framing", lifespan=ciclo)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# toda rota que altera o jogo ou move a câmera passa por aqui; leitura e /eventos ficam livres
+ESCRITA = [Depends(exige_token)]
 
 
 class NovaPartida(BaseModel):
@@ -305,55 +377,61 @@ class NovaZona(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "kafka_habilitado": bool(kafka and kafka.enabled),
-            "modo_demo": MODO_DEMO and not KAFKA_HABILITADO,
-            "detectores": list(detectores),
-            "calibracoes_carregadas": list(calibracoes.keys())}
+    with trava:
+        return {"status": "ok", "kafka_habilitado": bool(kafka and kafka.enabled),
+                "modo_demo": MODO_DEMO and not KAFKA_HABILITADO,
+                "token": TOKEN is not None,
+                "detectores": list(detectores),
+                "calibracoes_carregadas": list(calibracoes.keys())}
 
 
-@app.post("/partidas")
+@app.post("/partidas", dependencies=ESCRITA)
 def criar(corpo: NovaPartida):
-    return visao(nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip()))
+    with trava:
+        return visao(nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip()))
 
 
 @app.get("/partidas/{pid}")
 def ler(pid: str):
-    return visao(buscar(pid))
+    with trava:
+        return visao(buscar(pid))
 
 
-@app.post("/partidas/{pid}/encerrar")
+@app.post("/partidas/{pid}/encerrar", dependencies=ESCRITA)
 def encerrar(pid: str):
-    p = buscar(pid)
-    p["encerrada"] = True
-    return mudou(p)
+    with trava:
+        p = buscar(pid)
+        p["encerrada"] = True
+        return mudou(p)
 
 
-@app.post("/decisoes/{did}/correcao")
+@app.post("/decisoes/{did}/correcao", dependencies=ESCRITA)
 def corrigir(did: str, corpo: Correcao):
     if corpo.veredito not in VEREDITOS:
         raise HTTPException(422, f"veredito deve ser um de {VEREDITOS}")
-    p, d = buscar_decisao(did)
-    if p["encerrada"]:
-        raise HTTPException(409, "partida encerrada; não é possível corrigir decisões")
-    if d["anulada"]:
-        raise HTTPException(409, "lance anulado; não é possível corrigi-lo")
-    if d["origem"] == "automatica" and d["veredito_automatico"] is None:
-        d["veredito_automatico"] = d["veredito"]
-    d.update(veredito=corpo.veredito, origem="corrigida", operador=corpo.operador.strip())
-    mudou(p)
-    return d
+    with trava:
+        p, d = buscar_decisao(did)
+        if p["encerrada"]:
+            raise HTTPException(409, "partida encerrada; não é possível corrigir decisões")
+        if d["anulada"]:
+            raise HTTPException(409, "lance anulado; não é possível corrigi-lo")
+        if d["origem"] == "automatica" and d["veredito_automatico"] is None:
+            d["veredito_automatico"] = d["veredito"]
+        d.update(veredito=corpo.veredito, origem="corrigida", operador=corpo.operador.strip())
+        mudou(p)
+        return dict(d)
 
 
-@app.post("/pontos/{did}/desfazer")
+@app.post("/pontos/{did}/desfazer", dependencies=ESCRITA)
 def desfazer(did: str):
-    p, d = buscar_decisao(did)
-    if p["encerrada"]:
-        raise HTTPException(409, "partida encerrada; não é possível desfazer pontos")
-    if d["anulada"]:
-        raise HTTPException(409, "este lance já foi desfeito")
-    d["anulada"] = True
-    mudou(p)
-    return visao(p)
+    with trava:
+        p, d = buscar_decisao(did)
+        if p["encerrada"]:
+            raise HTTPException(409, "partida encerrada; não é possível desfazer pontos")
+        if d["anulada"]:
+            raise HTTPException(409, "este lance já foi desfeito")
+        d["anulada"] = True
+        return mudou(p)
 
 
 @app.get("/p6/video")
@@ -367,26 +445,30 @@ def video_p6():
 @app.get("/p6/deteccoes")
 def deteccoes_do_p6(de: float, ate: float):
     """bolas do S1 entre de e ate (segundos do video), para a sobreposicao do player"""
-    i = bisect.bisect_left(deteccoes_p6, de, key=lambda d: d[0])
-    j = bisect.bisect_right(deteccoes_p6, ate, key=lambda d: d[0])
-    return [{"t": t, "bolas": bolas} for t, bolas in deteccoes_p6[i:j]]
+    with trava:
+        i = bisect.bisect_left(deteccoes_p6, de, key=lambda d: d[0])
+        j = bisect.bisect_right(deteccoes_p6, ate, key=lambda d: d[0])
+        return [{"t": t, "bolas": bolas} for t, bolas in deteccoes_p6[i:j]]
 
 
-@app.post("/decisoes/{did}/replay")
+@app.post("/decisoes/{did}/replay", dependencies=ESCRITA)
 def replay(did: str):
     """6c (A4): o replay da jogada é um clipe do S4, pedido por ods.s4.capture.command. O clipe
     chega por ods.s4.clip e aparece no lance; até lá, a tela salta na gravação que já toca."""
-    _, d = buscar_decisao(did)
+    with trava:
+        _, d = buscar_decisao(did)
+        source_id, instante = d["source_id"], d["instante"]
     if not kafka or not kafka.enabled:
         raise HTTPException(503, "Sem barramento: o replay fica na gravação local.")
-    t = datetime.fromisoformat(d["instante"].replace("Z", "+00:00"))
+    t = datetime.fromisoformat(instante.replace("Z", "+00:00"))
     janela = [(t + timedelta(seconds=s)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
               for s in (-REPLAY_ANTES_S, REPLAY_DEPOIS_S)]
     try:
-        pedido = kafka.pedir_clipe(d["source_id"], *janela, f"lance {did}")
+        pedido = kafka.pedir_clipe(source_id, *janela, f"lance {did}")
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc
-    clipes_pedidos[pedido] = did
+    with trava:
+        clipes_pedidos[pedido] = did
     return {"pedido": pedido, "start_at": janela[0], "end_at": janela[1]}
 
 
@@ -395,7 +477,8 @@ def estado_p6():
     """O que o player precisa: qual vídeo (muda o nome, o player recarrega) e a sessão de replay
     em curso, a que alinha o player à câmera e faz o lance cair em instante - started_at."""
     video = f"{P6_VIDEO.name}-{P6_VIDEO.stat().st_size}" if P6_VIDEO.is_file() else None
-    return {"video": video, "sessao": sessao_p6}
+    with trava:
+        return {"video": video, "sessao": sessao_p6}
 
 
 @app.get("/camera/estado")
@@ -407,7 +490,7 @@ def estado_camera():
     return kafka.estado_camera()
 
 
-@app.post("/camera/enquadrar")
+@app.post("/camera/enquadrar", dependencies=ESCRITA)
 def enquadrar(pan_deg: float = 0.0, tilt_deg: float = 0.0):
     if not (-90 <= pan_deg <= 90):                    # faixas do ods.p7.move.command (6c)
         raise HTTPException(422, "pan_deg deve estar entre -90 e 90 graus")
@@ -423,37 +506,40 @@ def enquadrar(pan_deg: float = 0.0, tilt_deg: float = 0.0):
 
 @app.get("/zonas/{source_id}")
 def ler_zona(source_id: str):
-    cal = calibracoes.get(source_id)
-    return {"calibracao": cal.versao if cal else None, "zona": registro.resumo(source_id),
-            "versoes": registro.versoes(source_id)}
+    with trava:
+        cal = calibracoes.get(source_id)
+        return {"calibracao": cal.versao if cal else None, "zona": registro.resumo(source_id),
+                "versoes": registro.versoes(source_id)}
 
 
-@app.post("/zonas")
+@app.post("/zonas", dependencies=ESCRITA)
 def salvar_zona(corpo: NovaZona):
-    """Converte o desenho para metros, grava a nova versão de ZONES e anuncia no barramento."""
-    cal = calibracoes.get(corpo.source_id)
-    if cal is None:
-        raise HTTPException(409, f"Sem calibração do I3 para {corpo.source_id}; não dá para converter a zona em metros.")
-    pontos = [(p.x, p.y) for p in corpo.pontos]
-    try:
-        poligono = pontos_para_metros(cal, pontos, corpo.largura, corpo.altura)
-        validar_quadra(poligono)
-    except ZonaInvalida as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return gravar_zona(cal, poligono)
+    """Converte o desenho para metros e grava a nova versão de ZONES no registro do A4."""
+    with trava:
+        cal = calibracoes.get(corpo.source_id)
+        if cal is None:
+            raise HTTPException(409, f"Sem calibração do I3 para {corpo.source_id}; não dá para converter a zona em metros.")
+        pontos = [(p.x, p.y) for p in corpo.pontos]
+        try:
+            poligono = pontos_para_metros(cal, pontos, corpo.largura, corpo.altura)
+            validar_quadra(poligono)
+        except ZonaInvalida as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return gravar_zona(cal, poligono)
 
 
-@app.post("/zonas/{source_id}/{versao}/usar")
+@app.post("/zonas/{source_id}/{versao}/usar", dependencies=ESCRITA)
 def usar_zona(source_id: str, versao: str):
     """Volta uma zona antiga como versão nova: a mais nova continua sendo a que vale para a
     regra, para o S1 e depois de reiniciar o back."""
-    cal = calibracoes.get(source_id)
-    if cal is None:
-        raise HTTPException(409, f"Sem calibração do I3 para {source_id}; não dá para publicar a zona.")
-    antiga = next((v for v in registro.versoes(source_id) if v["artifact_version"] == versao), None)
-    if antiga is None:
-        raise HTTPException(404, f"zona {versao} nao existe para {source_id}")
-    return gravar_zona(cal, [tuple(p) for p in antiga["poligono_m"]])
+    with trava:
+        cal = calibracoes.get(source_id)
+        if cal is None:
+            raise HTTPException(409, f"Sem calibração do I3 para {source_id}; não dá para publicar a zona.")
+        antiga = next((v for v in registro.versoes(source_id) if v["artifact_version"] == versao), None)
+        if antiga is None:
+            raise HTTPException(404, f"zona {versao} nao existe para {source_id}")
+        return gravar_zona(cal, [tuple(p) for p in antiga["poligono_m"]])
 
 
 def gravar_zona(cal, poligono):
@@ -470,13 +556,17 @@ def gravar_zona(cal, poligono):
 @app.get("/eventos")
 async def eventos(partida: str, request: Request):
     """SSE: envia a partida inteira sempre que houver uma mudança."""
-    p = buscar(partida)
+    with trava:
+        p = buscar(partida)
 
     async def stream():
         visto = -1
         while not await request.is_disconnected():
-            if p["versao"] != visto:
-                visto = p["versao"]
-                yield f"event: partida\ndata: {json.dumps(visao(p))}\n\n"
+            with trava:
+                versao = p["versao"]
+                dados = json.dumps(visao(p)) if versao != visto else None
+            if dados is not None:
+                visto = versao
+                yield f"event: partida\ndata: {dados}\n\n"
             await asyncio.sleep(0.3)
     return StreamingResponse(stream(), media_type="text/event-stream")

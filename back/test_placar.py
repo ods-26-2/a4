@@ -1,4 +1,9 @@
 """python test_placar.py -- confere a regra do placar do mock"""
+import os
+import tempfile
+
+os.environ.setdefault("A4_DADOS_DIR", tempfile.mkdtemp())  # as partidas do teste nao vao para back/dados
+
 from main import nova_partida, placar
 
 

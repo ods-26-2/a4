@@ -34,12 +34,39 @@ export interface Partida {
   placar: { sets: Record<Lado, number>; pontos: Record<Lado, number> };
 }
 
-async function post<T>(caminho: string, corpo?: unknown): Promise<T> {
+// token do arbitro: o back exige nas rotas que alteram o jogo quando tem A4_TOKEN. fica no
+// navegador; armazenamento bloqueado (aba anonima, previa) so faz pedir de novo
+const CHAVE_TOKEN = "a4-token";
+
+function lerToken(): string | null {
+  try {
+    return localStorage.getItem(CHAVE_TOKEN);
+  } catch {
+    return null;
+  }
+}
+
+function guardarToken(token: string) {
+  try {
+    localStorage.setItem(CHAVE_TOKEN, token);
+  } catch {
+    // sem armazenamento o token vale so para este pedido
+  }
+}
+
+async function post<T>(caminho: string, corpo?: unknown, token = lerToken()): Promise<T> {
   const r = await fetch(`${API}${caminho}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: corpo === undefined ? undefined : JSON.stringify(corpo),
   });
+  if (r.status === 401 && typeof window !== "undefined") {
+    const digitado = window.prompt("Token do árbitro")?.trim();
+    if (digitado && digitado !== token) {
+      guardarToken(digitado);
+      return post<T>(caminho, corpo, digitado);
+    }
+  }
   if (!r.ok) throw new Error(`${caminho}: ${r.status} ${await r.text()}`);
   return r.json();
 }

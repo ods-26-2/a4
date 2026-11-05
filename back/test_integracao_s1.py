@@ -3,6 +3,11 @@
 Simula o fluxo completo: calibração I3, posições S1 com a bola, e verifica
 que o Detector reconhece o quique e a decisão chega no Score Manager.
 """
+import os
+import tempfile
+
+os.environ.setdefault("A4_DADOS_DIR", tempfile.mkdtemp())  # as partidas do teste nao vao para back/dados
+
 import uuid
 from datetime import datetime, timezone
 

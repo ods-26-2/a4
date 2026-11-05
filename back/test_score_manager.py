@@ -1,4 +1,9 @@
 """Testes rápidos do Score Manager e do contrato do P7: python test_score_manager.py"""
+import os
+import tempfile
+
+os.environ.setdefault("A4_DADOS_DIR", tempfile.mkdtemp())  # as partidas do teste nao vao para back/dados
+
 from kafka_bridge import KafkaBridge, TOPICO_COMANDO_P7, TOPICO_ESTADO_P7
 from main import Correcao, adicionar_decisao, agora, corrigir, desfazer, nova_partida, placar
 

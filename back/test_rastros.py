@@ -3,6 +3,11 @@
 o caminho do main: calibracao do i3, ods.s1.position por quadro, sessao nova no meio do voo,
 outra camera e toque de jogador; a cena e a camera sintetica de cena_sintetica.py
 """
+import os
+import tempfile
+
+os.environ.setdefault("A4_DADOS_DIR", tempfile.mkdtemp())  # as partidas do teste nao vao para back/dados
+
 import uuid
 from datetime import datetime, timezone
 
