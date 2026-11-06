@@ -40,7 +40,7 @@ assert cmd["target"] == "P7" and cmd["payload"]["source_id"] == "pt0", cmd
 
 # replay: o ods.s4.clip do pedido (correlation_id) entra no lance, com a URL da midia
 import main
-main.S4_MIDIA_URL = "http://s4.local/midia"
+main.S4_MIDIA_URL = "http://s4.local:18084"
 p = nova_partida(source_id="cam0")
 adicionar_decisao(p, decisao("d-replay", "fora", "A"))
 main.clipes_pedidos["pedido-1"] = "d-replay"
@@ -49,5 +49,5 @@ main.receber_clipe({"correlation_id": "pedido-1", "payload": {
     "start_at": "2026-11-04T01:00:00.000Z", "end_at": "2026-11-04T01:00:05.000Z",
     "hash_sha256": "0" * 64, "expires_at": "2026-12-04T01:00:05.000Z"}})
 clip = next(d for d in p["decisoes"] if d["decisao_id"] == "d-replay")["clip"]
-assert clip["url"] == "http://s4.local/midia/clips/2026/11/04/c-1.mp4" and "pedido-1" not in main.clipes_pedidos, clip
+assert clip["url"] == "http://s4.local:18084/api/v1/clips/c-1/media" and "pedido-1" not in main.clipes_pedidos, clip
 print("comandos 6c e replay do S4 ok")

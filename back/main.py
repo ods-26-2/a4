@@ -57,7 +57,8 @@ clipes_pedidos: dict[str, str] = {}                  # message_id do ods.s4.capt
 # sobreposicao na tela sai de S1): [(video_s, [[u, v, em_jogo], ...])], em ordem de tempo
 deteccoes_p6: list[tuple[float, list]] = []
 MAX_DETECCOES = 20000                                # ~11 min de jogo a 30 quadros/s
-# media_uri do S4 (s4://<caminho>) vira URL do navegador por esta base: acesso controlado do S4
+# endereco da API HTTP do S4 (ex. http://jetson:18084): o player toca o clipe em
+# <base>/api/v1/clips/<clip_id>/media, a rota do S4 que serve o arquivo (o media_uri e so o nome)
 S4_MIDIA_URL = os.getenv("A4_S4_MEDIA_URL", "").rstrip("/")
 REPLAY_ANTES_S, REPLAY_DEPOIS_S = 3.0, 2.0
 # 6c (Arquitetura, seção 5): o backend valida, persiste e traduz o que o usuário informa. As
@@ -281,7 +282,7 @@ def receber_clipe(envelope: dict[str, Any]):
         return
     c = envelope["payload"]
     uri = c["media_uri"]
-    url = f"{S4_MIDIA_URL}/{uri.removeprefix('s4://')}" if S4_MIDIA_URL and uri.startswith("s4://") else None
+    url = f"{S4_MIDIA_URL}/api/v1/clips/{c['clip_id']}/media" if S4_MIDIA_URL else None
     d["clip"] = {"clip_id": c["clip_id"], "media_uri": uri, "url": url, "start_at": c["start_at"],
                  "end_at": c["end_at"], "expires_at": c["expires_at"]}
     mudou(p)
