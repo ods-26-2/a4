@@ -38,5 +38,6 @@ jobs:
           cache: npm
           cache-dependency-path: front/package-lock.json
       - run: npm ci
+      - run: npx next typegen              # LayoutProps e as rotas sao tipos gerados em .next/
       - run: npx tsc --noEmit
       - run: npx eslint .
