@@ -5,9 +5,11 @@
 #
 # calibracao (6c, secao 3): o I3 grava o CALIBRATION no registro, anuncia em ods.artifact.published e
 # manda o conteudo em ods.i3.calibration; o back aplica na hora. a versao fixada em A4_CALIBRACOES e
-# a que o back carrega do registro ao subir. refazer quando a camera mexer, com --versao nova:
-#   docker compose -f compose.nuvem.yml run --rm -T i3 --source-id cam0 --versao cal-cam0-2 \
-#     --espaco quadra-volei-fivb --origem "..." --eixos "..." --linhas dados/quadra_mediana.png < ../i3/dados/pontos_quadra.csv
+# a que o back carrega do registro ao subir. refazer quando a camera mexer, com --versao nova; sem
+# clique, o I3 acha a quadra na imagem pelo desenho FIVB (i3/padroes) e a lateral do lado da camera:
+#   docker compose -f compose.nuvem.yml run --rm -T i3 --source-id cam0 --versao cal-cam0-3 \
+#     --espaco quadra-volei-fivb --origem "canto proximo esquerdo" --eixos "x ao longo dos 18 m, y afastando da camera" \
+#     --linhas dados/quadra_mediana.png --padrao padroes/quadra-volei-fivb.json --perto "lateral y=0" < /dev/null
 name: a4-nuvem
 
 x-kafka: &kafka ${KAFKA:-34.66.235.91:9093}
