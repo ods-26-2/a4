@@ -28,9 +28,10 @@ P7_SOURCE_ID = os.getenv("A4_P7_SOURCE_ID", "pt0")        # mecanismo pan-tilt d
 CAMPOS_ENVELOPE = ("message_id", "message_type", "schema", "schema_version", "producer", "payload")
 VERSAO_SUPORTADA = "1."
 MAX_VISTOS = 5000
-# artefatos retidos: lidos do começo a cada partida, senão o A4 que sobe depois do I3 (ou da câmera)
-# fica sem calibração ou sem sessão. o resto (posição, estado do P7, clipes) é fluxo: do fim em diante
-DO_COMECO = (TOPICO_CALIBRACAO, TOPICO_SESSAO)
+# a sessão é lida do começo, senão o A4 que sobe depois da câmera fica sem sessão. a calibração
+# vem do registro na partida, pela versão fixada na build (6c, seção 3); do tópico, só as novas.
+# o resto (posição, estado do P7, clipes) é fluxo: do fim em diante
+DO_COMECO = (TOPICO_SESSAO,)
 
 
 def agora() -> str:

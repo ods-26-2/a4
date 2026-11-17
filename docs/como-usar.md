@@ -243,7 +243,7 @@ back do A4 (regra de dentro ou fora) ← ods.s1.position ← S1
 
 ### Marcar a quadra
 
-1. O back precisa de uma calibração de `ods.i3.calibration` para a câmera. Ela chega pelo Kafka ou por arquivo, em `A4_CALIBRACAO_ARQUIVO`. Pelo Kafka, o tópico é lido desde o começo, então vale também a calibração publicada antes de o back subir; sem Kafka, só pelo arquivo.
+1. O back precisa do CALIBRATION da câmera, que segue o ciclo de vida da 6c (seção 3). O I3 grava o artefato no registro (`--registro`, a mesma pasta de `A4_ARTEFATOS_DIR`) e, com Kafka, anuncia e publica o conteúdo em `ods.i3.calibration`. O back carrega na partida as versões de `A4_CALIBRACOES`, conferindo o hash, e aplica na hora as que chegam pelo tópico depois de ele subir.
 2. Na aba Gestão, em "Zona da quadra", escolha a câmera e envie uma foto de um quadro dela, na mesma proporção da calibração.
 3. Clique nos 4 cantos e feche com o botão direito. O editor do B6 só funciona com mouse.
 4. Clique em "Salvar zona". Cada salvamento cria uma versão nova. O editor do B6 não reabre zonas salvas, então para mudar é preciso desenhar de novo.
@@ -281,13 +281,16 @@ Abaixo do editor ficam as zonas salvas da câmera. "Usar esta" volta uma zona an
 O back serve uma gravação em `GET /p6/video` e o painel "Replay e câmera" toca ela em laço, como se fosse a câmera ao vivo. Na 6c o vídeo fica fora do barramento, então nada disso passa pelo Kafka.
 
 ```
-cd back && A4_CALIBRACAO_ARQUIVO=../old/yolo/calibracao-cam0.json .venv/bin/uvicorn main:app --port 8000
+cd ../i3 && .venv/bin/python main.py --source-id cam0 --versao cal-cam0-2 --espaco quadra-volei-fivb \
+    --origem "canto proximo esquerdo" --eixos "x ao longo dos 18 m, y afastando da camera" \
+    --linhas dados/quadra_mediana.png --registro ../a4/back/artefatos < dados/pontos_quadra.csv > /dev/null
+cd ../a4/back && A4_CALIBRACOES=cal-cam0-2 .venv/bin/uvicorn main:app --port 8000
 cd front && npm run dev
 ```
 
 - **Vídeo:** `old/yolo/clipe.mp4` por padrão; outro `.mp4` com `A4_P6_VIDEO`.
 - **Replay do lance, sem barramento:** volta o vídeo para 3 s antes do lance, toca 5 s e volta ao ao vivo. O instante do lance vira posição do vídeo pelo relógio que a tela guarda enquanto está aberta, então lance de antes de abrir a tela não tem replay. Os lances do modo demo são sorteados; o replay mostra o que o vídeo exibia naquela hora.
-- **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração vem de `old/yolo/calibracao-cam0.json`, saída do I3 para esse clipe (`main.py --source-id cam0 --espaco quadra-volei-fivb ... < dados/pontos_quadra.csv`, com o referencial da seção 1.1).
+- **Zona:** na aba Gestão, "Usar quadro do vídeo" põe um quadro da gravação no editor do B6. A calibração é a `cal-cam0-2` que o I3 gravou no registro no primeiro comando, medida pelas linhas da quadra desse clipe, com o referencial da seção 1.1. Rodar de novo sem `--valido-desde` é recusado: o `valid_from` muda e uma versão nunca muda de conteúdo. Repita o mesmo `--valido-desde` ou use uma `--versao` nova.
 
 ### Com o barramento
 

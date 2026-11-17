@@ -33,3 +33,31 @@ main.carregar_partidas()
 assert main.partidas == {}
 assert not arquivo.exists() and list(Path(PASTA).glob("partidas-ilegivel-*.json")), "o ilegivel fica guardado"
 print("partidas salvas ok")
+
+# a calibracao fixada na build volta do registro, no formato que o I3 grava (6c, secao 3)
+import hashlib  # noqa: E402
+import json  # noqa: E402
+
+import cena_sintetica  # noqa: E402
+from arbitragem import calibracao  # noqa: E402
+from zonas import Registro  # noqa: E402
+
+raiz = Path(tempfile.mkdtemp())
+pasta = raiz / "i3" / "calibration" / "cal-cam0-2"
+pasta.mkdir(parents=True)
+dados = json.dumps(cena_sintetica.envelope()["payload"]).encode()
+(pasta / "content.json").write_bytes(dados)
+descritor = {"artifact_id": "cal-cam0", "artifact_version": "cal-cam0-2", "kind": "CALIBRATION", "owner": "I3",
+             "uri": "registry://i3/calibration/cal-cam0-2/content.json",
+             "hash_sha256": hashlib.sha256(dados).hexdigest()}
+(pasta / "descriptor.json").write_text(json.dumps(descritor))
+cal = calibracao(Registro(raiz).calibracao("cal-cam0-2"))
+assert (cal.source_id, cal.versao) == ("cam0", "cal-cam0-2"), cal[:2]
+
+(pasta / "content.json").write_bytes(dados.replace(b"1000", b"1001"))
+try:
+    Registro(raiz).calibracao("cal-cam0-2")
+    raise AssertionError("conteudo alterado no registro tem que ser recusado")
+except ValueError as erro:
+    assert "hash" in str(erro)
+print("calibracao do registro ok")

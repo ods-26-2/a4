@@ -21,7 +21,8 @@ class Consumidor:
 c = Consumidor()
 posicionar(c, [Particao(t) for t in (TOPICO_CALIBRACAO, TOPICO_SESSAO, TOPICO_POSICAO, TOPICO_ESTADO_P7, TOPICO_CLIPE_S4)])
 offsets = {p.topic: p.offset for p in c.atribuidas}
-assert offsets[TOPICO_CALIBRACAO] == offsets[TOPICO_SESSAO] == OFFSET_BEGINNING, "artefato retido: do comeco"
+assert offsets[TOPICO_SESSAO] == OFFSET_BEGINNING, "a sessao aberta antes de o back subir"
+assert offsets[TOPICO_CALIBRACAO] == OFFSET_END, "na partida a calibracao vem do registro, pela versao da build"
 assert offsets[TOPICO_POSICAO] == offsets[TOPICO_ESTADO_P7] == offsets[TOPICO_CLIPE_S4] == OFFSET_END, \
     "posicao velha nao pode virar lance depois de reiniciar"
 

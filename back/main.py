@@ -40,7 +40,9 @@ INTERVALO_S = float(os.getenv("A4_INTERVALO_S", "6"))
 MODO_DEMO = os.getenv("A4_MODO_DEMO", "true").lower() in {"1", "true", "yes", "sim"}
 KAFKA_HABILITADO = os.getenv("A4_KAFKA_ENABLED", "false").lower() in {"1", "true", "yes", "sim"}
 VEREDITOS = ("dentro", "fora", "duvida")
-CALIBRACAO_ARQUIVO = os.getenv("A4_CALIBRACAO_ARQUIVO")
+# CALIBRATION fixada na build (6c, secao 3): carregada do registro na partida; as versoes novas
+# chegam depois em ods.i3.calibration. lista separada por virgula, uma por camera
+CALIBRACOES = [v.strip() for v in os.getenv("A4_CALIBRACOES", "").split(",") if v.strip()]
 # fonte de vídeo do player (decisão do A4): a gravação que a câmera do jogo toca, servida aqui.
 # na 6c o vídeo fica fora do barramento; o player toca qualquer URL, então outra fonte é outra URL
 P6_VIDEO = Path(os.getenv("A4_P6_VIDEO") or Path(__file__).parent.parent / "old" / "yolo" / "clipe.mp4")
@@ -312,11 +314,12 @@ async def ciclo(_app):
     registro.carregar()
     if TOKEN is None:
         log.warning("A4_TOKEN não definido: qualquer um que alcance a API altera o jogo e move a câmera.")
-    if CALIBRACAO_ARQUIVO:
-        with open(CALIBRACAO_ARQUIVO, encoding="utf-8") as arquivo:
-            conteudo = json.load(arquivo)
-        for envelope in conteudo if isinstance(conteudo, list) else [conteudo]:
-            receber_calibracao(envelope)
+    for versao in CALIBRACOES:
+        try:
+            receber_calibracao(registro.calibracao(versao))
+        except (OSError, ValueError, KeyError):
+            # o placar e a correcao manual seguem sem a calibracao; o /health mostra o que carregou
+            log.exception("Calibração %s fixada na build não carregou do registro %s", versao, registro.raiz)
     if KAFKA_HABILITADO:
         kafka = KafkaBridge(receber_calibracao, receber_posicao, receber_sessao, receber_clipe)
         try:

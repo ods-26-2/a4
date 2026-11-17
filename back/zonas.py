@@ -84,7 +84,8 @@ def conteudo_zones(cal, poligono):
 class Registro:
     """pasta no formato do registro de artefatos: registry://<caminho> e <raiz>/<caminho>
 
-    cada versao e imutavel. a pasta e a que o s1 recebe em S1_REGISTRY_DIR.
+    cada versao e imutavel. a pasta e a que o s1 recebe em S1_REGISTRY_DIR. na implantacao e o
+    registro da aplicacao: o A4 grava aqui o ZONES e le o CALIBRATION que o I3 grava em i3/.
     """
 
     def __init__(self, raiz=None):
@@ -105,6 +106,19 @@ class Registro:
             if n > ordem.get(source_id, 0):
                 ordem[source_id] = n
                 self._atuais[source_id] = (descritor, conteudo, _zona(descritor, conteudo))
+
+    def calibracao(self, versao):
+        """o CALIBRATION do I3 pela versao fixada na build (6c, secao 3), no formato do envelope
+        de ods.i3.calibration; recusa descritor de outro artefato e hash que nao confere"""
+        descritor = json.loads((self.raiz / "i3" / "calibration" / versao / "descriptor.json")
+                               .read_text(encoding="utf-8"))
+        if descritor["kind"] != "CALIBRATION" or descritor["artifact_version"] != versao:
+            raise ValueError(f"{versao}: o descritor e de {descritor['kind']} {descritor['artifact_version']}")
+        dados = (self.raiz / descritor["uri"].removeprefix("registry://")).read_bytes()
+        if hashlib.sha256(dados).hexdigest() != descritor["hash_sha256"]:
+            raise ValueError(f"{versao}: hash_sha256 do registro nao confere com o conteudo")
+        return {"source_id": descritor["artifact_id"].removeprefix("cal-"), "artifact_version": versao,
+                "payload": json.loads(dados)}
 
     def atual(self, source_id):
         item = self._atuais.get(source_id)
