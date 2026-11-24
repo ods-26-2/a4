@@ -25,6 +25,10 @@ TOPICO_SESSAO = "ods.session.started"
 TOPICO_CAPTURA_S4 = "ods.s4.capture.command"
 TOPICO_CLIPE_S4 = "ods.s4.clip"
 P7_SOURCE_ID = os.getenv("A4_P7_SOURCE_ID", "pt0")        # mecanismo pan-tilt do A4 (6c)
+# ponytail: ods.i1.command fica fora da 6c e do b1; é o orquestrador do I1 na Jetson (MOD-1, acordo
+# da homologação de 24/11): uma equipe por vez na GPU, fila FIFO, o vídeo <squad>.mp4 da equipe
+TOPICO_COMANDO_I1 = "ods.i1.command"
+I1_SQUAD = os.getenv("A4_I1_SQUAD", "INV1")
 CAMPOS_ENVELOPE = ("message_id", "message_type", "schema", "schema_version", "producer", "payload")
 VERSAO_SUPORTADA = "1."
 MAX_VISTOS = 5000
@@ -179,6 +183,11 @@ class KafkaBridge:
         return {"status": "ENVIADO", "command_id": envelope["message_id"], "pan_deg": float(pan_deg),
                 "tilt_deg": float(tilt_deg), "topico": TOPICO_COMANDO_P7,
                 "aviso": "Comando publicado; aguardando confirmação em ods.p7.state."}
+
+    def comandar_i1(self, acao: str) -> None:
+        """START pede a vez do I1 e abre o vídeo da equipe, HEARTBEAT segura a vez (o I1 solta em
+        60 s sem ele), STOP libera a GPU. O nome da câmera é do I1: a partida usa o que ele publica"""
+        self._enviar(self.comando(TOPICO_COMANDO_I1, "I1", {"action": acao, "squad": I1_SQUAD}), I1_SQUAD)
 
     def pedir_clipe(self, source_id: str, inicio: str, fim: str, rotulo: str) -> str:
         """ods.s4.capture.command de um CLIP; o descritor volta por ods.s4.clip com

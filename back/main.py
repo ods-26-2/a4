@@ -68,6 +68,7 @@ REPLAY_ANTES_S, REPLAY_DEPOIS_S = 3.0, 2.0
 ARQUIVO_PARTIDAS = Path(os.getenv("A4_DADOS_DIR") or Path(__file__).parent / "dados") / "partidas.json"
 # token do árbitro: sem ele definido, a API fica aberta (desenvolvimento local)
 TOKEN = os.getenv("A4_TOKEN") or None
+I1_HEARTBEAT_S = 20.0                                # o I1 solta a vez em 60 s sem HEARTBEAT
 # a thread do Kafka e as rotas mexem nas mesmas partidas, calibrações e detecções
 trava = threading.RLock()
 
@@ -290,6 +291,22 @@ def receber_clipe(envelope: dict[str, Any]):
     mudou(p)
 
 
+def comandar_i1(acao):
+    """partida ao vivo segura a vez do I1; sem barramento o placar segue e a falha fica no log"""
+    if not kafka or not kafka.enabled:
+        return
+    try:
+        kafka.comandar_i1(acao)
+    except RuntimeError:
+        log.warning("I1 não recebeu %s", acao, exc_info=True)
+
+
+def ao_vivo():
+    """há partida aberta; a "demo" é a partida padrão da tela e não pede o I1"""
+    with trava:
+        return any(not p["encerrada"] and p["id"] != "demo" for p in partidas.values())
+
+
 def lance_falso(p):
     """Gera lances fictícios apenas no modo demo local, nunca com Kafka habilitado."""
     v = random.choices(VEREDITOS, weights=(5, 4, 1))[0]
@@ -327,6 +344,13 @@ async def ciclo(_app):
         except Exception:
             kafka = None
             log.exception("Não foi possível iniciar a integração Kafka; API seguirá sem barramento")
+
+        async def manter_i1():
+            while True:
+                await asyncio.sleep(I1_HEARTBEAT_S)
+                if ao_vivo():
+                    await asyncio.to_thread(comandar_i1, "HEARTBEAT")
+        tarefa = asyncio.create_task(manter_i1())
     elif MODO_DEMO:
         async def gerar():
             while True:
@@ -392,7 +416,10 @@ def health():
 @app.post("/partidas", dependencies=ESCRITA)
 def criar(corpo: NovaPartida):
     with trava:
-        return visao(nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip()))
+        p = nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip())
+        resposta = visao(p)
+    comandar_i1("START")                             # fora da trava: o envio espera o broker
+    return resposta
 
 
 @app.get("/partidas/{pid}")
@@ -406,7 +433,10 @@ def encerrar(pid: str):
     with trava:
         p = buscar(pid)
         p["encerrada"] = True
-        return mudou(p)
+        resposta = mudou(p)
+    if not ao_vivo():                                # a vez no I1 é da equipe: só solta sem partida aberta
+        comandar_i1("STOP")
+    return resposta
 
 
 @app.post("/decisoes/{did}/correcao", dependencies=ESCRITA)
