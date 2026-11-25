@@ -24,6 +24,9 @@ python3 -m venv .venv
 - Documentação interativa de todas as rotas: http://localhost:8000/docs
 - Para lances mais rápidos, mude o intervalo:
   `A4_INTERVALO_S=1 .venv/bin/uvicorn main:app --reload --port 8000`
+- A partida `demo` é de quadra com o Time A sacando. Para outra configuração:
+  `A4_DEMO_MODALIDADE=areia A4_DEMO_SAQUE=B .venv/bin/uvicorn main:app --reload --port 8000`.
+  Trocar a configuração recria a `demo` vazia; manter a mesma continua o jogo salvo.
 - Teste da regra do placar: `.venv/bin/python test_placar.py` (tem que imprimir `placar ok`).
 
 Para testar sem o front:
@@ -105,7 +108,7 @@ arquitetura 6c). Mudança aqui precisa ser combinada entre back e front.
 
 | método | rota | para quê | resposta |
 |---|---|---|---|
-| POST | `/partidas` | criar partida `{ time_a, time_b, source_id }` | Partida |
+| POST | `/partidas` | criar partida `{ time_a, time_b, source_id, modalidade, saque_inicial }` (`modalidade`: `quadra` ou `areia`, padrão `quadra`; `saque_inicial`: `A` ou `B`, padrão `A`) | Partida |
 | GET | `/partidas/{id}` | estado atual | Partida |
 | POST | `/partidas/{id}/encerrar` | encerrar; o mock para de inventar lances | Partida |
 | POST | `/decisoes/{id}/correcao` | árbitro troca o veredito `{ veredito, operador }` | Decisao |
@@ -152,14 +155,26 @@ arquitetura 6c). Mudança aqui precisa ser combinada entre back e front.
   "time_a": "Time A",
   "time_b": "Time B",
   "source_id": "cam0",
+  "modalidade": "quadra",
+  "saque_inicial": "A",
   "encerrada": false,
   "decisoes": [ /* Decisao, do mais antigo ao mais novo */ ],
-  "placar": { "sets": { "A": 0, "B": 0 }, "pontos": { "A": 2, "B": 1 } }
+  "regra": { "sets_para_vencer": 3, "pontos_set": 25, "pontos_desempate": 15 },
+  "placar": { "sets": { "A": 0, "B": 0 }, "pontos": { "A": 2, "B": 1 }, "saque": "A", "vencedor": null }
 }
 ```
 
-O placar é sempre recalculado a partir das decisões (set a 25 com dois de vantagem, 5º set
-a 15). Por isso corrigir ou desfazer qualquer lance antigo atualiza o placar sem nenhuma
+O placar é sempre recalculado a partir das decisões, com dois pontos de vantagem para fechar
+o set:
+
+- **quadra**: melhor de 5, sets a 25, 5º set a 15;
+- **areia**: melhor de 3, sets a 21, 3º set a 15.
+
+`saque` é o time que saca o próximo ponto. Quem ganha o ponto passa a sacar. O 1º set começa
+com `saque_inicial`, e o primeiro saque de cada set seguinte alterna entre os times. Quando um
+time vence a partida, `vencedor` é preenchido, `saque` vira `null` e lances seguintes não contam.
+
+Por isso corrigir ou desfazer qualquer lance antigo atualiza o placar sem nenhuma
 lógica extra no front.
 
 ---

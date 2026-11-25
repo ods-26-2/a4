@@ -1,9 +1,15 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { criarPartida, encerrarPartida, type Partida } from "@/lib/api";
+import { criarPartida, encerrarPartida, type Lado, type Modalidade, type Partida } from "@/lib/api";
 import EditorZonas from "./EditorZonas";
 import s from "./Gestao.module.css";
+
+// so o texto de ajuda; quem aplica a regra e o back
+const REGRAS: Record<Modalidade, string> = {
+  quadra: "Melhor de 5 · sets a 25 · 5º set a 15",
+  areia: "Melhor de 3 · sets a 21 · 3º set a 15",
+};
 
 interface Props {
   partida: Partida | null;
@@ -18,6 +24,7 @@ interface Props {
  */
 export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
   const [confirmando, setConfirmando] = useState(false);
+  const [modalidade, setModalidade] = useState<Modalidade>("quadra");
 
   async function criar(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -27,6 +34,8 @@ export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
         time_a: String(f.get("time_a")) || "Time A",
         time_b: String(f.get("time_b")) || "Time B",
         source_id: String(f.get("source_id")),
+        modalidade: f.get("modalidade") as Modalidade,
+        saque_inicial: f.get("saque_inicial") as Lado,
       }));
       aviso("Partida criada e ao vivo");
     } catch (err) {
@@ -54,7 +63,17 @@ export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
             <label className={s.campo}>Time A<input name="time_a" defaultValue="Time A" /></label>
             <label className={s.campo}>Time B<input name="time_b" defaultValue="Time B" /></label>
             <label className={s.campo}>Modalidade
-              <select name="modalidade"><option>Vôlei · set a 25, 5º a 15</option></select>
+              <select name="modalidade" value={modalidade} onChange={(e) => setModalidade(e.target.value as Modalidade)}>
+                <option value="quadra">Vôlei de quadra</option>
+                <option value="areia">Vôlei de areia</option>
+              </select>
+              <span className={s.dica}>{REGRAS[modalidade]}</span>
+            </label>
+            <label className={s.campo}>Começa sacando
+              <select name="saque_inicial">
+                <option value="A">Time A</option>
+                <option value="B">Time B</option>
+              </select>
             </label>
             <label className={s.campo}>Câmera
               <select name="source_id"><option>cam0</option><option>cam1</option></select>
