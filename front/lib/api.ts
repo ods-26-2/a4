@@ -24,14 +24,30 @@ export interface Decisao {
   instante: string;
 }
 
+export type Modalidade = "quadra" | "areia";
+
+export interface Regra {
+  sets_para_vencer: number; // 3 na quadra (melhor de 5), 2 na areia (melhor de 3)
+  pontos_set: number;
+  pontos_desempate: number; // o ultimo set possivel
+}
+
 export interface Partida {
   id: string;
   time_a: string;
   time_b: string;
   source_id: string;
+  modalidade: Modalidade;
+  saque_inicial: Lado; // quem saca no 1o set; os sets seguintes alternam
   encerrada: boolean;
   decisoes: Decisao[];
-  placar: { sets: Record<Lado, number>; pontos: Record<Lado, number> };
+  regra: Regra;
+  placar: {
+    sets: Record<Lado, number>;
+    pontos: Record<Lado, number>;
+    saque: Lado | null; // null com a partida decidida
+    vencedor: Lado | null;
+  };
 }
 
 // token do arbitro: o back exige nas rotas que alteram o jogo quando tem A4_TOKEN. fica no
@@ -75,6 +91,8 @@ export interface NovaPartida {
   time_a: string;
   time_b: string;
   source_id: string;
+  modalidade: Modalidade;
+  saque_inicial: Lado;
 }
 
 export const criarPartida = (n: NovaPartida) => post<Partida>("/partidas", n);

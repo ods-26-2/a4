@@ -22,7 +22,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +38,9 @@ log = logging.getLogger("a4")
 
 INTERVALO_S = float(os.getenv("A4_INTERVALO_S", "6"))
 MODO_DEMO = os.getenv("A4_MODO_DEMO", "true").lower() in {"1", "true", "yes", "sim"}
+# partida demo: modalidade (quadra | areia) e quem saca primeiro (A | B)
+DEMO_MODALIDADE = os.getenv("A4_DEMO_MODALIDADE", "quadra").strip().lower()
+DEMO_SAQUE = os.getenv("A4_DEMO_SAQUE", "A").strip().upper()
 KAFKA_HABILITADO = os.getenv("A4_KAFKA_ENABLED", "false").lower() in {"1", "true", "yes", "sim"}
 VEREDITOS = ("dentro", "fora", "duvida")
 # CALIBRATION fixada na build (6c, secao 3): carregada do registro na partida; as versoes novas
@@ -110,13 +113,44 @@ def exige_token(authorization: str | None = Header(default=None)):
         raise HTTPException(401, "token do árbitro ausente ou errado", headers={"WWW-Authenticate": "Bearer"})
 
 
-def nova_partida(time_a="Time A", time_b="Time B", source_id="cam0", pid=None):
+# sets_para_vencer: melhor de 5 vence com 3, melhor de 3 com 2; o set de desempate é o último possível
+MODALIDADES = {
+    "quadra": {"sets_para_vencer": 3, "pontos_set": 25, "pontos_desempate": 15},
+    "areia": {"sets_para_vencer": 2, "pontos_set": 21, "pontos_desempate": 15},
+}
+
+
+def regra(p):
+    """partidas salvas antes da modalidade existir são de quadra"""
+    return MODALIDADES[p.get("modalidade", "quadra")]
+
+
+def nova_partida(time_a="Time A", time_b="Time B", source_id="cam0", pid=None,
+                 modalidade="quadra", saque_inicial="A"):
     p = {"id": pid or str(uuid.uuid4()), "time_a": time_a, "time_b": time_b,
-         "source_id": source_id, "encerrada": False, "decisoes": [], "versao": 0}
+         "source_id": source_id, "modalidade": modalidade, "saque_inicial": saque_inicial,
+         "encerrada": False, "decisoes": [], "versao": 0}
     with trava:
         partidas[p["id"]] = p
         salvar_partidas()
     return p
+
+
+def preparar_demo(modalidade=None, saque=None):
+    """partida `demo` com a configuração pedida. A demo salva com outra configuração é recriada
+    vazia: lances de uma modalidade não fazem sentido na outra"""
+    modalidade = modalidade or DEMO_MODALIDADE
+    saque = saque or DEMO_SAQUE
+    if modalidade not in MODALIDADES:
+        raise ValueError(f"A4_DEMO_MODALIDADE={modalidade!r}; use {' ou '.join(MODALIDADES)}")
+    if saque not in ("A", "B"):
+        raise ValueError(f"A4_DEMO_SAQUE={saque!r}; use A ou B")
+    demo = partidas.get("demo")
+    if demo and (demo.get("modalidade", "quadra"), demo.get("saque_inicial", "A")) == (modalidade, saque):
+        return demo
+    if demo:
+        log.info("Partida demo recriada: %s com saque do %s", modalidade, saque)
+    return nova_partida(pid="demo", modalidade=modalidade, saque_inicial=saque)
 
 
 def ganhador(d):
@@ -130,26 +164,42 @@ def ganhador(d):
 def placar(p):
     """Calcula o placar do zero a partir das decisões válidas, inclusive após correções.
 
-    Vôlei: sets a 25 com dois de vantagem; 5º set a 15. O estado é derivado,
-    nunca incrementado por efeitos colaterais, então corrigir/anular lance antigo
-    recalcula corretamente o placar inteiro.
+    Quadra: melhor de 5, sets a 25 com dois de vantagem, 5º set a 15.
+    Areia: melhor de 3, sets a 21 com dois de vantagem, 3º set a 15.
+    Saque: quem ganha o ponto saca o próximo; o primeiro saque do set alterna entre os
+    times a partir de `saque_inicial`. O estado é derivado, nunca incrementado por efeitos
+    colaterais, então corrigir/anular lance antigo recalcula corretamente o placar inteiro.
+    Com a partida decidida, lances seguintes não contam e não há saque.
     """
+    r = regra(p)
+    inicial = p.get("saque_inicial", "A")
     sets, pts = {"A": 0, "B": 0}, {"A": 0, "B": 0}
+    saque, vencedor = inicial, None
     for d in p["decisoes"]:
         g = ganhador(d)
-        if not g:
+        if not g or vencedor:
             continue
         pts[g] += 1
-        alvo = 15 if sets["A"] + sets["B"] == 4 else 25
+        saque = g
+        n_sets = sets["A"] + sets["B"]
+        desempate = n_sets == 2 * r["sets_para_vencer"] - 2
+        alvo = r["pontos_desempate"] if desempate else r["pontos_set"]
         outro = "B" if g == "A" else "A"
         if pts[g] >= alvo and pts[g] - pts[outro] >= 2:
             sets[g] += 1
             pts = {"A": 0, "B": 0}
-    return {"sets": sets, "pontos": pts}
+            if sets[g] == r["sets_para_vencer"]:
+                vencedor, saque = g, None
+            else:
+                # sets ímpares (1º, 3º, 5º) começam com quem sacou primeiro
+                saque = inicial if (n_sets + 1) % 2 == 0 else ("B" if inicial == "A" else "A")
+    return {"sets": sets, "pontos": pts, "saque": saque, "vencedor": vencedor}
 
 
 def visao(p):
-    return {k: v for k, v in p.items() if k != "versao"} | {"placar": placar(p)}
+    return ({"modalidade": "quadra", "saque_inicial": "A"}
+            | {k: v for k, v in p.items() if k != "versao"}
+            | {"placar": placar(p), "regra": regra(p)})
 
 
 def buscar(pid):
@@ -326,7 +376,7 @@ def lance_falso(p):
 async def ciclo(_app):
     global kafka
     carregar_partidas()
-    demo = partidas.get("demo") or nova_partida(pid="demo")
+    demo = preparar_demo()
     tarefa = None
     registro.carregar()
     if TOKEN is None:
@@ -384,6 +434,8 @@ class NovaPartida(BaseModel):
     time_a: str = Field(default="Time A", min_length=1, max_length=80)
     time_b: str = Field(default="Time B", min_length=1, max_length=80)
     source_id: str = Field(default="cam0", min_length=1, max_length=100)
+    modalidade: Literal["quadra", "areia"] = "quadra"
+    saque_inicial: Literal["A", "B"] = "A"
 
 
 class Correcao(BaseModel):
@@ -416,7 +468,8 @@ def health():
 @app.post("/partidas", dependencies=ESCRITA)
 def criar(corpo: NovaPartida):
     with trava:
-        p = nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip())
+        p = nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip(),
+                         modalidade=corpo.modalidade, saque_inicial=corpo.saque_inicial)
         resposta = visao(p)
     comandar_i1("START")                             # fora da trava: o envio espera o broker
     return resposta

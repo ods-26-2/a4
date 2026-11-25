@@ -31,6 +31,11 @@
 .set { font: 700 20px var(--fonte-titulo); letter-spacing: 0.1em; }
 .x { font: 500 40px var(--fonte-titulo); color: var(--muted); }
 .estado { font-size: 13px; color: var(--muted); }
+.modalidade { font-size: 12px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.saque, .semSaque { display: flex; gap: 6px; align-items: center; font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.saque b { width: 12px; height: 12px; border-radius: 50%; background: var(--fg); }
+.semSaque { visibility: hidden; }
+.semSaque b { width: 12px; height: 12px; }
 
 @media (max-width: 860px) {
   .placar { padding: 14px 10px; gap: 6px; }
