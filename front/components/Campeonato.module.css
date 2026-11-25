@@ -1,0 +1,57 @@
+.form { display: grid; gap: 12px; }
+.campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.campo { display: grid; gap: 4px; font-size: 14px; font-weight: 600; min-width: 0; align-content: start; }
+.campo input, .campo select, .campo textarea, .mini select {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px;
+  min-height: 46px; font: inherit; font-weight: 400; color: inherit; width: 100%; min-width: 0;
+}
+.campo textarea { resize: vertical; line-height: 1.5; }
+.dica { font-size: 12px; font-weight: 400; color: var(--muted); }
+.vazio { color: var(--muted); }
+
+.lista { list-style: none; display: grid; gap: 8px; }
+.item {
+  width: 100%; text-align: left; display: grid; gap: 2px; padding: 12px 14px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+}
+.item:hover { border-color: var(--accent); }
+.item span { font-size: 13px; color: var(--muted); }
+
+.cabeca { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.titulo { font: 700 26px var(--fonte-titulo); letter-spacing: 0.04em; overflow-wrap: anywhere; }
+
+.rolagem { overflow-x: auto; }
+.tabela { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.tabela th, .tabela td { padding: 9px 8px; text-align: center; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tabela th { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.05em; }
+.tabela tbody tr:first-child td { background: var(--dentro-bg); }
+.tabela .nomeTime { text-align: left; width: 100%; white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
+
+.rodada { display: grid; gap: 8px; }
+.rodada + .rodada { margin-top: 6px; }
+.jogos { list-style: none; display: grid; gap: 8px; }
+.jogo {
+  /* colunas fixas: confronto, situacao e acoes alinham de uma linha para a outra */
+  display: grid; grid-template-columns: minmax(0, 1fr) 170px 390px; gap: 8px 14px;
+  align-items: center; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+}
+.confronto { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr); gap: 10px; align-items: center; font-weight: 600; }
+.confronto > span:first-child { text-align: right; overflow-wrap: anywhere; }
+.confronto > span:last-child { overflow-wrap: anywhere; }
+.sets { font: 700 18px var(--fonte-titulo); color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; }
+.vencedor { color: var(--dentro); }
+.estado { display: grid; gap: 2px; justify-items: start; }
+.chip { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 99px; background: var(--surface2); color: var(--muted); }
+.ao_vivo { background: var(--dentro-bg); color: var(--dentro); }
+.concluido { background: var(--surface2); color: var(--fg); }
+.interrompido { background: var(--duvida-bg); color: var(--duvida); }
+.acoes { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; justify-content: end; }
+.mini { display: grid; gap: 2px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.mini select { min-height: 40px; padding: 7px 10px; color: var(--fg); max-width: 170px; }
+.acoes :global(.botao) { min-height: 42px; }
+
+@media (max-width: 960px) {
+  .jogo { grid-template-columns: minmax(0, 1fr); }
+  .acoes { justify-content: start; }
+  .cabeca { grid-template-columns: minmax(0, 1fr); }
+}

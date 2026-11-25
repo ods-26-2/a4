@@ -110,6 +110,10 @@ arquitetura 6c). Mudança aqui precisa ser combinada entre back e front.
 |---|---|---|---|
 | POST | `/partidas` | criar partida `{ time_a, time_b, source_id, modalidade, saque_inicial }` (`modalidade`: `quadra` ou `areia`, padrão `quadra`; `saque_inicial`: `A` ou `B`, padrão `A`) | Partida |
 | GET | `/partidas/{id}` | estado atual | Partida |
+| GET | `/campeonatos` | todos os campeonatos, o mais novo primeiro | Campeonato[] |
+| POST | `/campeonatos` | criar `{ nome, modalidade, times: [...] }`; o back gera os jogos (todos contra todos) | Campeonato |
+| GET | `/campeonatos/{id}` | jogos, resultados e ranking | Campeonato |
+| POST | `/campeonatos/{id}/jogos/{jogo}/iniciar` | abre a partida do jogo `{ source_id, saque_inicial }`; jogo interrompido pode recomeçar | Partida |
 | POST | `/partidas/{id}/encerrar` | encerrar; o mock para de inventar lances | Partida |
 | POST | `/decisoes/{id}/correcao` | árbitro troca o veredito `{ veredito, operador }` | Decisao |
 | POST | `/pontos/{id}/desfazer` | anula o lance; ele deixa de contar no placar | Partida |
@@ -176,6 +180,41 @@ time vence a partida, `vencedor` é preenchido, `saque` vira `null` e lances seg
 
 Por isso corrigir ou desfazer qualquer lance antigo atualiza o placar sem nenhuma
 lógica extra no front.
+
+### Campeonato
+
+Todos contra todos: cada time joga uma vez contra cada outro, em rodadas geradas pelo back.
+Fica salvo em `back/dados/campeonatos.json` (ou `A4_DADOS_DIR`), junto do `partidas.json`.
+
+```json
+{
+  "id": "uuid",
+  "nome": "Copa ODS",
+  "modalidade": "areia",
+  "times": ["Tubarões", "Gaviões", "Leões", "Falcões"],
+  "criado_em": "2026-11-25T14:00:00.000Z",
+  "jogos": [
+    { "id": "j1", "rodada": 1, "time_a": "Tubarões", "time_b": "Falcões", "partida_id": "uuid",
+      "situacao": "concluido",
+      "resultado": { "vencedor": "B", "sets": { "A": 1, "B": 2 },
+                     "parciais": [{ "A": 21, "B": 9 }, { "A": 19, "B": 21 }, { "A": 7, "B": 15 }] } }
+  ],
+  "ranking": [
+    { "posicao": 1, "time": "Falcões", "pontos": 2, "jogos": 1, "vitorias": 1, "derrotas": 0,
+      "sets_pro": 2, "sets_contra": 1, "pontos_pro": 45, "pontos_contra": 47 }
+  ]
+}
+```
+
+- `situacao`: `a_jogar`, `ao_vivo`, `concluido` ou `interrompido` (a partida foi encerrada
+  antes de ter vencedor; o jogo pode ser recomeçado do zero).
+- `resultado` acompanha o placar da partida: corrigir ou desfazer um lance depois do fim refaz
+  o resultado e o ranking.
+- Ranking pela regra FIVB. Quadra: 3×0 ou 3×1 dá 3 pontos ao vencedor; 3×2 dá 2 ao vencedor e
+  1 ao perdedor. Areia: vitória 2, derrota 1. Desempate por vitórias, saldo de sets e saldo de
+  pontos. `situacao`, `regra` e `ranking` são calculados na resposta; o arquivo guarda o resto.
+- No modo demo, o back inventa lances para toda partida aberta sem vencedor, inclusive as do
+  campeonato.
 
 ---
 

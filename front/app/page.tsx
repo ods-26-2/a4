@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Campeonato from "@/components/Campeonato";
 import Gestao from "@/components/Gestao";
 import LanceAtual from "@/components/LanceAtual";
 import ListaLances from "@/components/ListaLances";
@@ -21,7 +22,8 @@ const OPERADOR = "arbitro"; // TODO: vem do login quando existir
  */
 export default function Home() {
   const [partidaId, setPartidaId] = useState(PARTIDA_INICIAL);
-  const [aba, setAba] = useState<"partida" | "gestao">("partida");
+  const [aba, setAba] = useState<"partida" | "campeonato" | "gestao">("partida");
+  const [campeonatoId, setCampeonatoId] = useState<string | null>(null);
   const [escolhido, setEscolhido] = useState<string>();
   const { partida, offline, trocar } = usePartida(partidaId);
   const { aviso, avisar } = useAviso();
@@ -44,6 +46,7 @@ export default function Home() {
         <h1>A4 · Arbitragem</h1>
         <nav className={s.abas} aria-label="Telas">
           <button aria-current={aba === "partida"} onClick={() => setAba("partida")}>Partida</button>
+          <button aria-current={aba === "campeonato"} onClick={() => setAba("campeonato")}>Campeonato</button>
           <button aria-current={aba === "gestao"} onClick={() => setAba("gestao")}>Gestão</button>
         </nav>
         <span className={`${s.conexao} ${offline ? s.offline : ""}`}>
@@ -51,7 +54,14 @@ export default function Home() {
         </span>
       </header>
 
-      {aba === "gestao" ? (
+      {aba === "campeonato" ? (
+        <Campeonato
+          campeonatoId={campeonatoId}
+          aoEscolher={setCampeonatoId}
+          aoAbrirPartida={(id) => { setPartidaId(id); setEscolhido(undefined); setAba("partida"); }}
+          aviso={avisar}
+        />
+      ) : aba === "gestao" ? (
         <Gestao
           partida={partida}
           aviso={avisar}

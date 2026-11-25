@@ -15,7 +15,7 @@ p = nova_partida(pid="teste")
 p["decisoes"] = [lance("dentro", "A"), lance("fora", "A"), lance("duvida", "B"),
                  lance("dentro", "B", anulada=True)]
 # dentro no lado A e ponto do B; fora no lado A e ponto do A; duvida e anulado nao contam
-assert placar(p) == {"sets": {"A": 0, "B": 0}, "pontos": {"A": 1, "B": 1}, "saque": "A", "vencedor": None}, placar(p)
+assert placar(p) == {"sets": {"A": 0, "B": 0}, "pontos": {"A": 1, "B": 1}, "parciais": [], "saque": "A", "vencedor": None}, placar(p)
 
 # 25 x 24 nao fecha o set; 26 x 24 fecha
 p["decisoes"] = [lance("fora", "A")] * 24 + [lance("fora", "B")] * 24 + [lance("fora", "A")]
@@ -25,7 +25,8 @@ assert placar(p)["sets"] == {"A": 1, "B": 0} and placar(p)["pontos"] == {"A": 0,
 
 # 5o set vai a 15
 p["decisoes"] = ([lance("fora", "A")] * 25 + [lance("fora", "B")] * 25) * 2 + [lance("fora", "A")] * 15
-assert placar(p) == {"sets": {"A": 3, "B": 2}, "pontos": {"A": 0, "B": 0}, "saque": None, "vencedor": "A"}, placar(p)
+assert placar(p) == {"sets": {"A": 3, "B": 2}, "pontos": {"A": 0, "B": 0}, "saque": None, "vencedor": "A",
+                     "parciais": [{"A": 25, "B": 0}, {"A": 0, "B": 25}] * 2 + [{"A": 15, "B": 0}]}, placar(p)
 # partida decidida: lances depois disso nao contam
 p["decisoes"] += [lance("fora", "B")] * 3
 assert placar(p)["sets"] == {"A": 3, "B": 2} and placar(p)["pontos"] == {"A": 0, "B": 0}, placar(p)
@@ -60,7 +61,8 @@ p["decisoes"] += [lance("fora", "A")] * 14 + [lance("fora", "B")] * 14
 p["decisoes"].append(lance("fora", "A"))                     # 15 x 14 nao fecha o 3o set
 assert placar(p)["sets"] == {"A": 1, "B": 1} and placar(p)["pontos"] == {"A": 15, "B": 14}, placar(p)
 p["decisoes"].append(lance("fora", "A"))                     # 16 x 14 fecha
-assert placar(p) == {"sets": {"A": 2, "B": 1}, "pontos": {"A": 0, "B": 0}, "saque": None, "vencedor": "A"}, placar(p)
+assert placar(p)["sets"] == {"A": 2, "B": 1} and placar(p)["vencedor"] == "A", placar(p)
+assert placar(p)["parciais"] == [{"A": 22, "B": 20}, {"A": 0, "B": 21}, {"A": 16, "B": 14}], placar(p)
 
 # demo configuravel: mesma configuracao mantem os lances, outra recria vazia
 d = preparar_demo("quadra", "A")

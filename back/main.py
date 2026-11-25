@@ -27,8 +27,9 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+import campeonato as camp
 from arbitragem import Detector, calibracao
 from kafka_bridge import KafkaBridge
 from zonas import TOLERANCIA_CM, Registro, ZonaInvalida, erro_quadra_cm, pontos_para_metros, validar_quadra
@@ -51,6 +52,7 @@ CALIBRACOES = [v.strip() for v in os.getenv("A4_CALIBRACOES", "").split(",") if 
 P6_VIDEO = Path(os.getenv("A4_P6_VIDEO") or Path(__file__).parent.parent / "old" / "yolo" / "clipe.mp4")
 
 partidas: dict[str, dict[str, Any]] = {}
+campeonatos: dict[str, dict[str, Any]] = {}
 kafka: KafkaBridge | None = None
 registro = Registro()
 calibracoes: dict[str, Any] = {}                     # source_id -> Calibracao mais recente
@@ -69,6 +71,8 @@ REPLAY_ANTES_S, REPLAY_DEPOIS_S = 3.0, 2.0
 # 6c (Arquitetura, seção 5): o backend valida, persiste e traduz o que o usuário informa. As
 # partidas vão para um arquivo a cada mudança, e o back que reinicia continua o jogo
 ARQUIVO_PARTIDAS = Path(os.getenv("A4_DADOS_DIR") or Path(__file__).parent / "dados") / "partidas.json"
+# campeonatos: times, tabela de jogos e o resultado de cada jogo; o ranking sai deste arquivo
+ARQUIVO_CAMPEONATOS = ARQUIVO_PARTIDAS.with_name("campeonatos.json")
 # token do árbitro: sem ele definido, a API fica aberta (desenvolvimento local)
 TOKEN = os.getenv("A4_TOKEN") or None
 I1_HEARTBEAT_S = 20.0                                # o I1 solta a vez em 60 s sem HEARTBEAT
@@ -78,6 +82,35 @@ trava = threading.RLock()
 
 def agora():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def gravar_json(arquivo, dados):
+    """em arquivo temporário trocado no lugar: um back que cai no meio da gravação deixa o
+    arquivo anterior inteiro"""
+    with trava:
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        temporario = arquivo.with_suffix(".tmp")
+        temporario.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(temporario, arquivo)
+
+
+def salvar_campeonatos():
+    gravar_json(ARQUIVO_CAMPEONATOS, list(campeonatos.values()))
+
+
+def carregar_campeonatos():
+    """campeonatos salvos; arquivo ilegível é guardado à parte, como o de partidas"""
+    if not ARQUIVO_CAMPEONATOS.is_file():
+        return
+    try:
+        salvos = json.loads(ARQUIVO_CAMPEONATOS.read_text(encoding="utf-8"))
+        with trava:
+            campeonatos.update({c["id"]: c for c in salvos})
+        log.info("%d campeonatos carregados de %s", len(salvos), ARQUIVO_CAMPEONATOS)
+    except (OSError, ValueError, KeyError, TypeError):
+        guardado = ARQUIVO_CAMPEONATOS.with_name(f"campeonatos-ilegivel-{int(time.time())}.json")
+        ARQUIVO_CAMPEONATOS.rename(guardado)
+        log.exception("Arquivo de campeonatos ilegível; guardado em %s", guardado)
 
 
 def salvar_partidas():
@@ -174,6 +207,7 @@ def placar(p):
     r = regra(p)
     inicial = p.get("saque_inicial", "A")
     sets, pts = {"A": 0, "B": 0}, {"A": 0, "B": 0}
+    parciais = []                                        # placar de cada set fechado
     saque, vencedor = inicial, None
     for d in p["decisoes"]:
         g = ganhador(d)
@@ -187,13 +221,14 @@ def placar(p):
         outro = "B" if g == "A" else "A"
         if pts[g] >= alvo and pts[g] - pts[outro] >= 2:
             sets[g] += 1
+            parciais.append(pts)
             pts = {"A": 0, "B": 0}
             if sets[g] == r["sets_para_vencer"]:
                 vencedor, saque = g, None
             else:
                 # sets ímpares (1º, 3º, 5º) começam com quem sacou primeiro
                 saque = inicial if (n_sets + 1) % 2 == 0 else ("B" if inicial == "A" else "A")
-    return {"sets": sets, "pontos": pts, "saque": saque, "vencedor": vencedor}
+    return {"sets": sets, "pontos": pts, "parciais": parciais, "saque": saque, "vencedor": vencedor}
 
 
 def visao(p):
@@ -220,7 +255,44 @@ def mudou(p):
     with trava:
         p["versao"] += 1
         salvar_partidas()
+        atualizar_jogo(p)
         return visao(p)
+
+
+def atualizar_jogo(p):
+    """partida de campeonato: o resultado do jogo acompanha o placar, inclusive correções"""
+    ligacao = p.get("campeonato")
+    c = ligacao and campeonatos.get(ligacao["id"])
+    if not c:
+        return
+    jogo = next((j for j in c["jogos"] if j["id"] == ligacao["jogo"]), None)
+    if jogo is None or jogo.get("partida_id") != p["id"]:
+        return
+    novo = camp.resultado(placar(p))
+    if jogo.get("resultado") != novo:
+        jogo["resultado"] = novo
+        salvar_campeonatos()
+
+
+def situacao_jogo(j):
+    """a_jogar, ao_vivo, concluido ou interrompido (partida encerrada antes de ter vencedor)"""
+    if j.get("resultado"):
+        return "concluido"
+    p = partidas.get(j.get("partida_id") or "")
+    if p is None:
+        return "a_jogar"
+    return "interrompido" if p["encerrada"] else "ao_vivo"
+
+
+def visao_campeonato(c):
+    jogos = [j | {"situacao": situacao_jogo(j)} for j in c["jogos"]]
+    return c | {"jogos": jogos, "regra": MODALIDADES[c["modalidade"]], "ranking": camp.ranking(c)}
+
+
+def buscar_campeonato(cid):
+    if cid not in campeonatos:
+        raise HTTPException(404, f"campeonato {cid} nao existe")
+    return campeonatos[cid]
 
 
 def adicionar_decisao(p, decisao):
@@ -376,7 +448,8 @@ def lance_falso(p):
 async def ciclo(_app):
     global kafka
     carregar_partidas()
-    demo = preparar_demo()
+    carregar_campeonatos()
+    preparar_demo()
     tarefa = None
     registro.carregar()
     if TOKEN is None:
@@ -406,8 +479,10 @@ async def ciclo(_app):
             while True:
                 await asyncio.sleep(INTERVALO_S)
                 with trava:
-                    if not demo["encerrada"]:
-                        lance_falso(demo)
+                    # toda partida aberta e ainda sem vencedor, inclusive as do campeonato
+                    for p in list(partidas.values()):
+                        if not p["encerrada"] and not placar(p)["vencedor"]:
+                            lance_falso(p)
         tarefa = asyncio.create_task(gerar())
         log.warning("Modo demo ativo: decisões fictícias serão geradas. Defina A4_MODO_DEMO=false para desligar.")
     try:
@@ -435,6 +510,29 @@ class NovaPartida(BaseModel):
     time_b: str = Field(default="Time B", min_length=1, max_length=80)
     source_id: str = Field(default="cam0", min_length=1, max_length=100)
     modalidade: Literal["quadra", "areia"] = "quadra"
+    saque_inicial: Literal["A", "B"] = "A"
+
+
+class NovoCampeonato(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    modalidade: Literal["quadra", "areia"] = "quadra"
+    times: list[str] = Field(min_length=2, max_length=32)
+
+    @field_validator("times")
+    @classmethod
+    def times_validos(cls, times):
+        times = [t.strip() for t in times if t.strip()]
+        if len(times) < 2:
+            raise ValueError("o campeonato precisa de pelo menos 2 times")
+        if any(len(t) > 80 for t in times):
+            raise ValueError("nome de time com mais de 80 caracteres")
+        if len({t.casefold() for t in times}) != len(times):
+            raise ValueError("há times com o mesmo nome")
+        return times
+
+
+class InicioJogo(BaseModel):
+    source_id: str = Field(default="cam0", min_length=1, max_length=100)
     saque_inicial: Literal["A", "B"] = "A"
 
 
@@ -470,6 +568,52 @@ def criar(corpo: NovaPartida):
     with trava:
         p = nova_partida(corpo.time_a.strip(), corpo.time_b.strip(), corpo.source_id.strip(),
                          modalidade=corpo.modalidade, saque_inicial=corpo.saque_inicial)
+        resposta = visao(p)
+    comandar_i1("START")                             # fora da trava: o envio espera o broker
+    return resposta
+
+
+@app.get("/campeonatos")
+def listar_campeonatos():
+    with trava:
+        return [visao_campeonato(c) for c in reversed(campeonatos.values())]
+
+
+@app.post("/campeonatos", dependencies=ESCRITA)
+def criar_campeonato(corpo: NovoCampeonato):
+    with trava:
+        c = {"id": str(uuid.uuid4()), "nome": corpo.nome.strip(), "modalidade": corpo.modalidade,
+             "times": corpo.times, "criado_em": agora(),
+             "jogos": [{"id": f"j{i}", "rodada": r, "time_a": a, "time_b": b,
+                        "partida_id": None, "resultado": None}
+                       for i, (r, a, b) in enumerate(camp.gerar_jogos(corpo.times), 1)]}
+        campeonatos[c["id"]] = c
+        salvar_campeonatos()
+        return visao_campeonato(c)
+
+
+@app.get("/campeonatos/{cid}")
+def ler_campeonato(cid: str):
+    with trava:
+        return visao_campeonato(buscar_campeonato(cid))
+
+
+@app.post("/campeonatos/{cid}/jogos/{jid}/iniciar", dependencies=ESCRITA)
+def iniciar_jogo(cid: str, jid: str, corpo: InicioJogo):
+    """abre a partida do jogo; um jogo interrompido pode ser recomeçado do zero"""
+    with trava:
+        c = buscar_campeonato(cid)
+        jogo = next((j for j in c["jogos"] if j["id"] == jid), None)
+        if jogo is None:
+            raise HTTPException(404, f"jogo {jid} nao existe no campeonato")
+        if situacao_jogo(jogo) in ("ao_vivo", "concluido"):
+            raise HTTPException(409, "esse jogo já está em andamento ou concluído")
+        p = nova_partida(jogo["time_a"], jogo["time_b"], corpo.source_id.strip(),
+                         modalidade=c["modalidade"], saque_inicial=corpo.saque_inicial)
+        p["campeonato"] = {"id": c["id"], "nome": c["nome"], "jogo": jid}
+        jogo["partida_id"] = p["id"]
+        salvar_partidas()
+        salvar_campeonatos()
         resposta = visao(p)
     comandar_i1("START")                             # fora da trava: o envio espera o broker
     return resposta

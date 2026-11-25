@@ -14,7 +14,9 @@ export default function Placar({ partida }: { partida: Partida }) {
         <span className={s.set}>{vencedor ? "FIM" : `${sets.A + sets.B + 1}º SET`}</span>
         <span className={s.x}>×</span>
         <span className={s.estado}>{estado}</span>
-        <span className={s.modalidade}>{partida.modalidade === "areia" ? "Areia" : "Quadra"}</span>
+        <span className={s.modalidade}>
+          {partida.campeonato ? `${partida.campeonato.nome} · ` : ""}{partida.modalidade === "areia" ? "Areia" : "Quadra"}
+        </span>
       </div>
       <Time nome={partida.time_b} pontos={pontos.B} sets={sets.B} total={total} sacando={saque === "B"} />
     </section>

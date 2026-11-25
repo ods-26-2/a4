@@ -2,14 +2,9 @@
 
 import { useState, type FormEvent } from "react";
 import { criarPartida, encerrarPartida, type Lado, type Modalidade, type Partida } from "@/lib/api";
+import { NOMES_MODALIDADE, REGRAS } from "@/lib/modalidade";
 import EditorZonas from "./EditorZonas";
 import s from "./Gestao.module.css";
-
-// so o texto de ajuda; quem aplica a regra e o back
-const REGRAS: Record<Modalidade, string> = {
-  quadra: "Melhor de 5 · sets a 25 · 5º set a 15",
-  areia: "Melhor de 3 · sets a 21 · 3º set a 15",
-};
 
 interface Props {
   partida: Partida | null;
@@ -25,14 +20,17 @@ interface Props {
 export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
   const [confirmando, setConfirmando] = useState(false);
   const [modalidade, setModalidade] = useState<Modalidade>("quadra");
+  // os nomes digitados aparecem na escolha de quem saca
+  const [timeA, setTimeA] = useState("Time A");
+  const [timeB, setTimeB] = useState("Time B");
 
   async function criar(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     try {
       aoCriar(await criarPartida({
-        time_a: String(f.get("time_a")) || "Time A",
-        time_b: String(f.get("time_b")) || "Time B",
+        time_a: timeA.trim() || "Time A",
+        time_b: timeB.trim() || "Time B",
         source_id: String(f.get("source_id")),
         modalidade: f.get("modalidade") as Modalidade,
         saque_inicial: f.get("saque_inicial") as Lado,
@@ -57,22 +55,27 @@ export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
   return (
     <>
       <section className="painel">
-        <h2>Nova partida</h2>
+        <h2>Partida avulsa</h2>
         <form className={s.form} onSubmit={criar}>
           <div className={s.campos}>
-            <label className={s.campo}>Time A<input name="time_a" defaultValue="Time A" /></label>
-            <label className={s.campo}>Time B<input name="time_b" defaultValue="Time B" /></label>
+            <label className={s.campo}>Time A
+              <input name="time_a" value={timeA} maxLength={80} onChange={(e) => setTimeA(e.target.value)} />
+            </label>
+            <label className={s.campo}>Time B
+              <input name="time_b" value={timeB} maxLength={80} onChange={(e) => setTimeB(e.target.value)} />
+            </label>
             <label className={s.campo}>Modalidade
               <select name="modalidade" value={modalidade} onChange={(e) => setModalidade(e.target.value as Modalidade)}>
-                <option value="quadra">Vôlei de quadra</option>
-                <option value="areia">Vôlei de areia</option>
+                {(Object.keys(NOMES_MODALIDADE) as Modalidade[]).map((m) => (
+                  <option key={m} value={m}>{NOMES_MODALIDADE[m]}</option>
+                ))}
               </select>
               <span className={s.dica}>{REGRAS[modalidade]}</span>
             </label>
             <label className={s.campo}>Começa sacando
               <select name="saque_inicial">
-                <option value="A">Time A</option>
-                <option value="B">Time B</option>
+                <option value="A">{timeA.trim() || "Time A"}</option>
+                <option value="B">{timeB.trim() || "Time B"}</option>
               </select>
             </label>
             <label className={s.campo}>Câmera

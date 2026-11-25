@@ -42,9 +42,11 @@ export interface Partida {
   encerrada: boolean;
   decisoes: Decisao[];
   regra: Regra;
+  campeonato?: { id: string; nome: string; jogo: string }; // so nas partidas de campeonato
   placar: {
     sets: Record<Lado, number>;
     pontos: Record<Lado, number>;
+    parciais: Record<Lado, number>[]; // placar de cada set fechado
     saque: Lado | null; // null com a partida decidida
     vencedor: Lado | null;
   };
@@ -96,6 +98,56 @@ export interface NovaPartida {
 }
 
 export const criarPartida = (n: NovaPartida) => post<Partida>("/partidas", n);
+
+// campeonato todos contra todos; o back guarda em campeonatos.json e calcula o ranking (FIVB)
+export type SituacaoJogo = "a_jogar" | "ao_vivo" | "concluido" | "interrompido";
+
+export interface Jogo {
+  id: string;
+  rodada: number;
+  time_a: string;
+  time_b: string;
+  partida_id: string | null;
+  situacao: SituacaoJogo;
+  resultado: { vencedor: Lado; sets: Record<Lado, number>; parciais: Record<Lado, number>[] } | null;
+}
+
+export interface LinhaRanking {
+  posicao: number;
+  time: string;
+  jogos: number;
+  vitorias: number;
+  derrotas: number;
+  pontos: number;
+  sets_pro: number;
+  sets_contra: number;
+  pontos_pro: number;
+  pontos_contra: number;
+}
+
+export interface Campeonato {
+  id: string;
+  nome: string;
+  modalidade: Modalidade;
+  times: string[];
+  criado_em: string;
+  regra: Regra;
+  jogos: Jogo[];
+  ranking: LinhaRanking[];
+}
+
+async function get<T>(caminho: string): Promise<T> {
+  const r = await fetch(`${API}${caminho}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${caminho}: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export const listarCampeonatos = () => get<Campeonato[]>("/campeonatos");
+export const lerCampeonato = (id: string) => get<Campeonato>(`/campeonatos/${id}`);
+export const criarCampeonato = (c: { nome: string; modalidade: Modalidade; times: string[] }) =>
+  post<Campeonato>("/campeonatos", c);
+export const iniciarJogo = (campeonato: string, jogo: string, c: { source_id: string; saque_inicial: Lado }) =>
+  post<Partida>(`/campeonatos/${campeonato}/jogos/${jogo}/iniciar`, c);
 export const encerrarPartida = (id: string) => post<Partida>(`/partidas/${id}/encerrar`);
 
 // 6c: o replay da jogada e um clipe do S4; o back pede (ods.s4.capture.command) e o clipe
