@@ -20,7 +20,9 @@ const OPERADOR = "arbitro"; // TODO: vem do login quando existir
  * a ligacao entre componentes e API; cada bloco visual esta em components/.
  */
 export default function Home() {
-  const [partidaId, setPartidaId] = useState(PARTIDA_INICIAL);
+  // ?partida=<id> abre a partida do link, para quem acompanha o jogo de outro lugar
+  const [partidaId, setPartidaId] = useState(() =>
+    (typeof window !== "undefined" && new URLSearchParams(location.search).get("partida")) || PARTIDA_INICIAL);
   const [aba, setAba] = useState<"partida" | "gestao">("partida");
   const [escolhido, setEscolhido] = useState<string>();
   const { partida, offline, trocar } = usePartida(partidaId);
@@ -55,7 +57,10 @@ export default function Home() {
         <Gestao
           partida={partida}
           aviso={avisar}
-          aoCriar={(p) => { setPartidaId(p.id); setEscolhido(undefined); setAba("partida"); }}
+          aoCriar={(p) => {
+            setPartidaId(p.id); setEscolhido(undefined); setAba("partida");
+            history.replaceState(null, "", `?partida=${p.id}`); // o endereco vira o link da partida
+          }}
           aoEncerrar={trocar}
         />
       ) : !partida ? (
