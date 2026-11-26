@@ -49,12 +49,19 @@ CALIBRACOES = [v.strip() for v in os.getenv("A4_CALIBRACOES", "").split(",") if 
 # fonte de vídeo do player (decisão do A4): a gravação que a câmera do jogo toca, servida aqui.
 # na 6c o vídeo fica fora do barramento; o player toca qualquer URL, então outra fonte é outra URL
 P6_VIDEO = Path(os.getenv("A4_P6_VIDEO") or Path(__file__).parent.parent / "old" / "yolo" / "clipe.mp4")
+# ponytail: desvio temporario da 6c. o I1 da Jetson le o mp4 sem ritmo e carimba captured_at com a
+# hora da leitura (~15 quadros/s num video de 29,97), e a gravidade do arco nao fecha. para as
+# cameras daqui ("INV1:29.97,..."), o tempo e frame_index/fps desde o primeiro quadro da sessao.
+# sai quando o I1 publicar captured_at = inicio + frame_index/fps
+RELOGIO_QUADRO = {cam.strip(): float(fps) for cam, fps in
+                  (item.split(":") for item in os.getenv("A4_RELOGIO_QUADRO", "").split(",") if item.strip())}
 
 partidas: dict[str, dict[str, Any]] = {}
 kafka: KafkaBridge | None = None
 registro = Registro()
 calibracoes: dict[str, Any] = {}                     # source_id -> Calibracao mais recente
 detectores: dict[str, tuple[str, Detector]] = {}     # source_id -> (session_id, Detector)
+origem_relogio: dict[str, tuple[str, float]] = {}    # source_id -> (session_id, t do quadro 0), RELOGIO_QUADRO
 # último ods.session.started: started_at amarra o captured_at dos lances à posição no vídeo
 sessao_p6: dict[str, Any] | None = None
 clipes_pedidos: dict[str, str] = {}                  # message_id do ods.s4.capture.command -> decisao_id
@@ -269,6 +276,20 @@ def receber_calibracao(envelope: dict[str, Any]):
     log.info("Calibração %s recebida para %s", cal.versao, cal.source_id)
 
 
+def tempo_do_quadro(envelope: dict[str, Any]) -> float:
+    """captured_at em segundos epoch; nas cameras de RELOGIO_QUADRO, frame_index/fps"""
+    t_s = datetime.fromisoformat(envelope["captured_at"].replace("Z", "+00:00")).timestamp()
+    fps = RELOGIO_QUADRO.get(envelope["source_id"])
+    if not fps:
+        return t_s
+    n = envelope["payload"]["frame_index"]
+    sessao, origem = origem_relogio.get(envelope["source_id"], (None, 0.0))
+    if sessao != envelope["session_id"]:
+        sessao, origem = envelope["session_id"], t_s - n / fps
+        origem_relogio[envelope["source_id"]] = (sessao, origem)
+    return origem + n / fps
+
+
 @sob_trava
 def receber_posicao(envelope: dict[str, Any]):
     """Recebe ods.s1.position e passa a bola pela regra, usando a zona salva da câmera."""
@@ -276,7 +297,7 @@ def receber_posicao(envelope: dict[str, Any]):
     # o barramento é compartilhado: só interessa a câmera de uma partida aberta aqui
     if not any(not p["encerrada"] and p["source_id"] == source_id for p in partidas.values()):
         return
-    t_s = datetime.fromisoformat(envelope["captured_at"].replace("Z", "+00:00")).timestamp()
+    t_s = tempo_do_quadro(envelope)
     # todas as bolas do quadro juntas: a bola em jogo e a que voa, nao um track_id
     # o ods.s1.position nao traz predicted (6c): ponto extrapolado pelo I2 chega como medido. o
     # ajuste do arco descarta o que nao voa, e o I2 so extrapola dentro do horizonte da predicao

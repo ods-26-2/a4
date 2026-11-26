@@ -76,7 +76,8 @@ export default function Gestao({ partida, aoCriar, aoEncerrar, aviso }: Props) {
               </select>
             </label>
             <label className={s.campo}>Câmera
-              <select name="source_id"><option>cam0</option><option>cam1</option></select>
+              {/* INV1: a camera do I1 da Jetson, que publica com o nome da equipe (A4_I1_SQUAD) */}
+              <select name="source_id"><option>INV1</option><option>cam0</option><option>cam1</option></select>
             </label>
           </div>
           <div><button className="botao pri" type="submit">Criar partida</button></div>

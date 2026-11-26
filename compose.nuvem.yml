@@ -1,7 +1,9 @@
-# o A4 na nuvem (VM do projeto ods-a4), para tirar o processamento da Jetson: I2, I3, back e front
-# do A4 no Kafka do Google Cloud (guia B2, sec. 1). O I1, o S1, o S4 e o P7 usam o mesmo broker.
-#   na VM, com i2, i3 e a4 lado a lado:   cd a4 && docker compose -f compose.nuvem.yml up -d --build
-#   a4/.env (o compose le sozinho): IP_PUBLICO e A4_TOKEN; opcionais KAFKA, FPS, A4_CALIBRACOES, A4_S4_MEDIA_URL
+# o A4 na nuvem (VM do projeto ods-a4): back e front do A4 no Kafka do Google Cloud (guia B2, sec. 1).
+# O I1, o I2 e o I3 rodam na Jetson (camadas 1-2, homologacao); o S1, o S4 e o P7 usam o mesmo broker.
+# O servico i3 daqui fica para calibrar no registro desta VM, que e o que o back carrega ao subir.
+#   na VM, com i3 e a4 lado a lado:   cd a4 && docker compose -f compose.nuvem.yml up -d --build --remove-orphans
+#   a4/.env (o compose le sozinho): IP_PUBLICO e A4_TOKEN; opcionais KAFKA, A4_CALIBRACOES, A4_S4_MEDIA_URL,
+#   A4_RELOGIO_QUADRO (INV1:29.97: tempo pelo frame_index enquanto o I1 da Jetson carimba na hora da leitura)
 #
 # calibracao (6c, secao 3): o I3 grava o CALIBRATION no registro, anuncia em ods.artifact.published e
 # manda o conteudo em ods.i3.calibration; o back aplica na hora. a versao fixada em A4_CALIBRACOES e
@@ -15,12 +17,6 @@ name: a4-nuvem
 x-kafka: &kafka ${KAFKA:-34.66.235.91:9093}
 
 services:
-  i2:
-    build: ../i2
-    restart: unless-stopped
-    # a camera vem de cada mensagem do I1; o --source-id do I2 so vale no modo csv
-    command: [--i1, *kafka, --kafka, *kafka, --fps, "${FPS:-30}"]
-
   back:
     build: back
     restart: unless-stopped
@@ -32,6 +28,7 @@ services:
       A4_TOKEN: ${A4_TOKEN:?defina A4_TOKEN no .env, a API fica aberta na internet}
       A4_CALIBRACOES: ${A4_CALIBRACOES:-}
       A4_S4_MEDIA_URL: ${A4_S4_MEDIA_URL:-}
+      A4_RELOGIO_QUADRO: ${A4_RELOGIO_QUADRO:-}
       A4_DADOS_DIR: /dados
       A4_ARTEFATOS_DIR: /registro
     volumes: [dados:/dados, registro:/registro]
